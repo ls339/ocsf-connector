@@ -1,0 +1,333 @@
+# SPEC: Okta System Log → OCSF → Amazon Security Lake
+
+**Status:** v1 design, pinned to vendor docs verified 2026-09-02.
+**Scope discipline:** one source, one sink, end to end. The plugin seam is visible
+but not generalized. Second sink and second source come after v1 ships.
+
+---
+
+## 1. What this is
+
+A connector that reads the Okta System Log, normalizes each event into the Open
+Cybersecurity Schema Framework (OCSF), and writes OCSF Parquet into an Amazon
+Security Lake custom source.
+
+The claim it exists to prove is narrow and deliberate: **security data is moved
+between two systems correctly**, under the failure modes that actually occur —
+restarts, rate limits, out-of-order delivery, and schema drift on both ends.
+
+Everything below that is marked **[verified]** is quoted or derived from vendor
+documentation checked on 2026-09-02, with the source linked in §8. Anything not
+marked verified is a design decision made here, not a fact about a vendor.
+
+---
+
+## 2. The source: Okta System Log
+
+Endpoint: `GET /api/v1/logs`
+
+### 2.1 Two query modes, and why the distinction is the whole design
+
+**[verified]** The API has two distinct modes, and they have different ordering
+guarantees:
+
+| | Polling query | Bounded query |
+|---|---|---|
+| Parameters | `since`, **no `until`**, `sortOrder=ASCENDING` | both `since` and `until` |
+| Ordered by | internal **persistence** time | the `published` field |
+| `next` link | **always present**, even when the page is empty | may be absent on the final page |
+| Terminates | never — it is a stream | yes |
+| Used for | tail mode | backfill mode |
+
+**[verified]** A polling query "may return events out of order according to the
+`published` field," because it is ordered by persistence time rather than
+publication time. Separately, "not all events for the specified time range may be
+present. Some events may be delayed. Such delays are rare but possible."
+
+**This is the single most important fact in this document.** It means:
+
+- `published` **cannot** be used as a resume watermark. An event with an earlier
+  `published` may be persisted after one with a later `published`. A
+  timestamp-based checkpoint silently drops those events forever.
+- **[verified]** Okta states directly: "Don't transfer data by manually
+  paginating using `since` and `until`, as this may lead to skipped or duplicated
+  events. Instead, always follow the `next` links."
+
+Therefore the checkpoint is **the opaque `next` cursor and nothing else**.
+`published` is retained only as an observability signal (ingest lag), never as
+control state.
+
+### 2.2 Pagination
+
+**[verified]** Pagination is via the `Link` response header with `rel="next"` and
+`rel="self"`. The `after` parameter inside that link is "system generated for use
+in `next` links. Don't attempt to craft requests that use this value."
+
+So the connector persists the **entire next URL** verbatim, treats it as opaque,
+and never parses or reconstructs it.
+
+In tail mode, the `next` link is always present and the page may be empty. An
+empty page is not an error and not an end-of-stream — it means "no new events
+yet." The runner sleeps and re-requests the *same* next URL.
+
+### 2.3 Rate limits
+
+**[verified]** The `/api/v1/logs` bucket is **120 requests/minute org-wide**, and
+a **single API token is capped at 60 requests/minute** against that endpoint.
+Exceeding it returns HTTP 429. `X-Rate-Limit-Reset` carries the UTC epoch second
+at which the limit resets; counters reset roughly every 60s but are not aligned
+to wall-clock minutes. **[verified]** Individual queries time out at 30 seconds.
+
+Design consequences:
+
+- The binding constraint is the **per-token 60/min**, i.e. ~1 request/second
+  sustained. Budget for that, not for the 120 org limit.
+- On 429, sleep until `X-Rate-Limit-Reset` **plus jitter**, not a fixed backoff.
+  Unjittered reset-time sleeps make every client in the org wake simultaneously.
+- Proactively throttle on `X-Rate-Limit-Remaining` rather than waiting for the
+  429. The connector shares the org budget with whatever else the customer runs.
+
+### 2.4 Authentication
+
+**[verified]** For Okta-scoped management APIs, an OAuth 2.0 **service app** using
+the **client credentials** grant with **`private_key_jwt`** is the *only*
+supported client authentication method — client ID + secret is explicitly not
+allowed. Required scope: `okta.logs.read`.
+
+Design consequences:
+
+- There is **no refresh token** in the client credentials flow. "Token refresh"
+  here means minting a fresh signed JWT assertion and exchanging it for a new
+  access token when the current one nears expiry. Renew on a margin (e.g. 80% of
+  lifetime elapsed), not on 401.
+- The private key is the credential. It is loaded from the environment or a
+  secrets manager at startup and never read from a config file in the repo.
+  Key rotation is supported by keying on the JWK `kid` so two keys can be valid
+  during a rollover.
+
+### 2.5 Event shape
+
+Fields consumed from each log event: `uuid`, `published`, `eventType`,
+`severity`, `displayMessage`, `actor`, `client`, `outcome`,
+`authenticationContext`, `securityContext`, `target`, `transaction`,
+`debugContext`.
+
+`uuid` is the dedup key. `eventType` is the mapping key.
+
+---
+
+## 3. The normalization: OCSF
+
+### 3.1 Version — and the constraint that decides it
+
+**[verified]** The current released OCSF schema is **v1.9.0**.
+**[verified]** Amazon Security Lake "supports OCSF version **1.3 and earlier**"
+for custom sources.
+
+The sink's schema ceiling is six minor versions below the spec. This is not a
+detail to paper over; it is the versioning story:
+
+- The mapper is **parameterized by target OCSF version**. v1 emits **1.3.0** for
+  the Security Lake sink because that is the hard constraint.
+- The version emitted is recorded in `metadata.version` on every event, and the
+  mapping table carries its own independent version in
+  `metadata.processed_time`-adjacent producer fields, so any record can be traced
+  to the mapping revision that produced it.
+- Future sinks (Splunk HEC, Datadog Logs) have no such ceiling and can take 1.9.
+
+### 3.2 Class model
+
+**[verified]** Identity & Access Management is `category_uid` **3**. Classes:
+
+| class_uid | Class |
+|---|---|
+| 3001 | Account Change |
+| 3002 | Authentication |
+| 3003 | Authorize Session |
+| 3004 | Entity Management |
+| 3005 | User Access Management |
+| 3006 | Group Management |
+| 3007 | User Management |
+| 3008 | Role Management |
+
+**[verified]** `type_uid = class_uid * 100 + activity_id`.
+
+**[verified]** Authentication (3002) `activity_id` values: 0 Unknown, 1 Logon,
+2 Logoff, 3 Authentication Ticket, 4 Service Ticket Request, 5 Service Ticket
+Renew, 6 Preauth, 7 Account Switch, 99 Other.
+
+**[verified]** Authentication required attributes: `time`, `metadata`,
+`category_uid`, `class_uid`, `type_uid`, `severity_id`, `status_id`,
+`activity_id`, `user`. Recommended: `actor`, `src_endpoint`, `auth_protocol_id`,
+`logon_type_id`, `session`, `is_mfa`, `message`, `status`, `observables`.
+**[verified]** Constraint: at minimum either `dst_endpoint` **or** `service` must
+be present — for Okta, populate `service` with the Okta org / application target.
+
+### 3.3 Mapping is data, not code
+
+Okta emits hundreds of `eventType` values and adds more continuously. The mapping
+lives in `src/ocsf_connector/mapping/okta_ocsf.yaml` as a versioned table keyed by
+`eventType`, not as a match statement.
+
+Rules:
+
+- An **unknown `eventType` must never crash or be dropped.** It falls back to a
+  generic class with the full source event in `unmapped`, and increments an
+  `unmapped_event_type` counter labeled by the event type. That counter is the
+  early-warning signal for source-side drift.
+- Every source field that is not mapped goes into `unmapped`. Populating
+  `unmapped` honestly is a feature; silently discarding source fields is the
+  signature of a toy connector.
+
+Worked example — `user.session.start` → Authentication (3002), `activity_id` 1,
+`type_uid` 300201:
+
+| Okta field | OCSF target |
+|---|---|
+| `published` | `time` (epoch **milliseconds**, UTC) |
+| `uuid` | `metadata.uid` |
+| `published` | `metadata.original_time` (string, as received) |
+| `outcome.result` SUCCESS / FAILURE | `status_id` 1 / 2 |
+| `outcome.reason` | `status_detail` |
+| `severity` INFO / WARN / ERROR | `severity_id` 1 / 3 / 4 |
+| `actor.id` / `.displayName` / `.alternateId` | `actor.user.uid` / `.name` / `.email_addr` |
+| `client.ipAddress` | `src_endpoint.ip` |
+| `client.geographicalContext` | `src_endpoint.location` |
+| `client.userAgent.rawUserAgent` | `http_request.user_agent` |
+| `authenticationContext.authenticationStep`, MFA signals | `is_mfa`, `auth_protocol_id` |
+| `target[]` | `service`, plus class-specific objects |
+| `debugContext`, `securityContext`, `transaction` | `unmapped` |
+
+---
+
+## 4. The sink: Amazon Security Lake custom source
+
+**[verified] requirements:**
+
+- **Format:** Apache Parquet, one file per object. Parquet format versions 1.x
+  and 2.x supported.
+- **Compression:** **zstandard preferred.**
+- **Layout:** data page ≤ **1 MB uncompressed**; row group ≤ **256 MB
+  compressed**; records within an object **sorted by time**.
+- **Partitioning:** objects must be prefixed
+  `/ext/{custom-source-name}/region={region}/accountId={accountId}/eventDay={YYYYMMDD}/`,
+  where `eventDay` is the UTC record timestamp as `YYYYMMDD`.
+- **Object cadence:** files should be sent in increments between **5 minutes and
+  1 event day**; more often than 5 minutes only if files exceed 256 MB.
+- **One event class per object.** "The same OCSF event class should apply to each
+  record within a Parquet-formatted object," and sources spanning multiple
+  categories "should deliver each unique OCSF event class as a separate source."
+- **Limit:** max **50 custom sources per account**.
+- **[verified]** Registration creates: an IAM role named
+  `AmazonSecurityLake-Provider-{source-name}-{region}` (permissions boundary
+  `AmazonSecurityLakePermissionsBoundary`), a Lake Formation table, and a Glue
+  crawler that populates the Data Catalog.
+
+### 4.1 Design consequences
+
+**The one-class-per-object rule shapes the writer.** A single Okta System Log
+stream fans out across at least four OCSF classes (3001, 3002, 3003, 3004). The
+sink therefore:
+
+1. Buckets mapped events **by `class_uid`** before serialization.
+2. Writes a separate Parquet object per (class, eventDay) pair.
+3. Registers **one Security Lake custom source per OCSF class** — e.g.
+   `okta_authentication`, `okta_account_change`. Well within the 50-source cap.
+
+**`accountId` for a non-AWS source.** Okta events do not belong to an AWS
+account. **[verified]** AWS recommends a string such as `external` or
+`external_{externalAccountId}` for exactly this case. v1 uses
+`external_{okta_org_id}`.
+
+**Batching is a real tradeoff, not a knob.** The 5-minute floor is in direct
+tension with the commit-after-ack rule in §5: a larger batch means fewer, better
+Parquet objects but a longer window of un-acked work to replay after a crash. v1
+flushes on whichever comes first — 5 minutes elapsed or 256 MB buffered — and
+accepts the replay window, because dedup (§5) makes replay harmless.
+
+---
+
+## 5. Correctness: checkpointing, ordering, idempotency
+
+The delivery guarantee is **at-least-once from the source, deduplicated on
+`uuid`, which is effectively-once at the sink.**
+
+The commit order is fixed and is the core invariant of this connector:
+
+```
+fetch page  →  map  →  buffer  →  flush to sink  →  sink ACKs  →  THEN persist cursor
+```
+
+- Persisting the cursor **before** the sink acknowledges loses events on crash.
+- Never persisting re-ingests the world on every restart.
+- Persisting **after** the ack means a crash in the gap replays the last batch —
+  which the `uuid` dedup set absorbs.
+
+**State store contents:**
+
+| Key | Purpose |
+|---|---|
+| `cursor` | the opaque `next` URL, verbatim. The only resume control state. |
+| `seen_uuids` | bounded set of recently-seen event `uuid`s, TTL'd by wall clock (default 24h), for replay dedup. |
+| `last_published` | most recent `published` seen. **Observability only.** Never used to resume. |
+| `mapping_version` | mapping table revision that produced the last write. |
+
+**The test that matters:** kill the process in the gap between sink-ack and
+cursor-commit, restart, and assert the sink contains each `uuid` exactly once.
+That test, more than any other artifact in this repo, is the thing worth pointing
+a buyer at.
+
+---
+
+## 6. Modes
+
+**Tail** — polling query (`sortOrder=ASCENDING`, no `until`), resumes from the
+stored cursor, follows `next` forever, sleeps on empty pages, respects the
+per-token 60/min budget.
+
+**Backfill** — bounded query (`since` + `until`), paginates until `next` is
+absent, then exits. Shares the mapper, sink, state store, and dedup set with tail
+mode; only the fetch loop and termination condition differ.
+
+Both modes write through the identical mapping and sink path. If backfill and
+tail ever produce different OCSF output for the same source event, that is a bug,
+and there is a test asserting they do not.
+
+---
+
+## 7. Self-observability
+
+Emitted as OpenTelemetry metrics:
+
+| Metric | Why it exists |
+|---|---|
+| `ingest_lag_seconds` | `now − published`. The headline SLI. Uses `published` for the one purpose it is safe for. |
+| `events_per_second` | throughput |
+| `error_rate` by class | source vs. map vs. sink failures, separated |
+| `unmapped_event_type_total{event_type}` | source schema drift early warning |
+| `rate_limit_remaining` | headroom against the shared org budget |
+| `cursor_commit_lag_seconds` | how much work is at risk of replay right now |
+| `parquet_objects_written{class_uid}` | sink health per Security Lake source |
+
+---
+
+## 8. Sources verified 2026-09-02
+
+- [Okta — System Log query](https://developer.okta.com/docs/reference/system-log-query/) — polling vs bounded, ordering, `next` links, `after`, delayed events
+- [Okta — Rate limits](https://developer.okta.com/docs/reference/rate-limits/) — `/api/v1/logs` 120/min org, 60/min per token
+- [Okta — Implement OAuth for Okta with a service app](https://developer.okta.com/docs/guides/implement-oauth-for-okta-serviceapp/main/) — client credentials + `private_key_jwt` only
+- [Okta — System Log API](https://developer.okta.com/docs/api/openapi/okta-management/management/tags/systemlog)
+- [OCSF schema browser](https://schema.ocsf.io/) — v1.9.0, IAM category 3, class UIDs
+- [OCSF — Authentication (3002)](https://schema.ocsf.io/1.9.0/classes/authentication) — activity IDs, required attributes, `type_uid` formula
+- [AWS — Collecting data from custom sources in Security Lake](https://docs.aws.amazon.com/security-lake/latest/userguide/custom-sources.html) — OCSF 1.3 ceiling, Parquet/zstd, partitioning, one class per object
+
+Re-verify §2 and §4 before v1 ships. Both vendors change these pages.
+
+---
+
+## 9. Explicitly out of scope for v1
+
+Splunk HEC and Datadog Logs sinks. Tailscale as a second source. A generalized
+plugin registry or entry-point loader. Multi-tenant orchestration. A UI.
+
+A narrow tool that works reads better than a half-finished framework.

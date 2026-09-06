@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Credentials. The private key is the credential -- it never lives in the repo.
+.env
+*.pem
+*.key
+*.jwk
+secrets/
+
+# Local run state
+state/*.db
+out/
+.terraform/
+*.tfstate
+*.tfstate.*
+.DS_Store
