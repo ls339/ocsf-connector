@@ -249,33 +249,81 @@ accepts the replay window, because dedup (§5) makes replay harmless.
 
 ## 5. Correctness: checkpointing, ordering, idempotency
 
-The delivery guarantee is **at-least-once from the source, deduplicated on
-`uuid`, which is effectively-once at the sink.**
+The delivery guarantee is **at-least-once from the source, made effectively-once
+at the sink by two different mechanisms that cover two different failure modes.**
+Conflating them was an error in an earlier draft of this section; §5.2 is the
+correction.
 
 The commit order is fixed and is the core invariant of this connector:
 
 ```
-fetch page  →  map  →  buffer  →  flush to sink  →  sink ACKs  →  THEN persist cursor
+fetch page  →  map  →  dedup  →  buffer  →  flush to sink  →  sink ACKs  →  THEN commit cursor
 ```
 
 - Persisting the cursor **before** the sink acknowledges loses events on crash.
 - Never persisting re-ingests the world on every restart.
-- Persisting **after** the ack means a crash in the gap replays the last batch —
-  which the `uuid` dedup set absorbs.
+- Persisting **after** the ack means a crash in the gap replays the last batch.
 
-**State store contents:**
+It lives in exactly one place in the code, `runner/loop.py`, which tail and
+backfill share.
+
+### 5.1 The commit is atomic, and dedup runs after mapping
+
+**The cursor and the seen-set advance together, in one `commit()`.** Two separate
+calls would open a third crash window between them. Both orderings of those two
+calls happen to be recoverable, but that is an argument to re-derive at every
+change; one atomic call makes it structural. A durable store must land both
+writes in a single transaction or it has not implemented `StateStore`.
+
+**Dedup runs after mapping, not before.** Filtering first would save work on
+duplicates, but mapping every record — including one already delivered — is what
+keeps `unmapped_event_type_total` incrementing on replay. Filtering first means a
+newly-appeared unknown `eventType` goes quiet the moment it repeats, which is
+precisely when the drift alarm should be loudest. Mapping is total (§3.3), so
+mapping a duplicate cannot fail.
+
+### 5.2 What dedup actually covers, and what covers the rest
+
+The `uuid` seen-set does **not** absorb a crash in the ack→commit gap. Because
+the commit is atomic, the crash that loses the cursor loses the seen-set in the
+same instant; the replayed batch arrives looking entirely new. The seen-set
+covers a different, real problem: **duplicates the source delivers**, which Okta
+documents ("may lead to skipped or duplicated events", §2.1), plus the overlap
+where a backfill range meets the tail.
+
+Exactly-once across a crash rests instead on **the sink write being idempotent**:
+
+- A batch is addressed by a `batch_key` — **the cursor the batch began at**.
+- `Sink.flush(batch_key)` writes the buffer to an object derived from that key,
+  so a replayed batch **overwrites** its object instead of adding a second one.
+- The key is stable across replay because the runner resumes from that same
+  cursor and the vendor returns the same page for it.
+- `should_flush` is read only at page boundaries, so a batch is always a whole
+  number of pages. If a replayed batch covers *fewer* pages than the original,
+  the events it drops are picked up by the batch starting where it ended — so
+  differing batch boundaries are self-healing, not a leak.
+
+The consequence for §4: object naming is not a cosmetic choice. `batch_key` is
+an opaque cursor and must be escaped or hashed before it becomes a path segment.
+
+### 5.3 State store contents
 
 | Key | Purpose |
 |---|---|
-| `cursor` | the opaque `next` URL, verbatim. The only resume control state. |
-| `seen_uuids` | bounded set of recently-seen event `uuid`s, TTL'd by wall clock (default 24h), for replay dedup. |
+| `cursor` | the opaque `next` URL, verbatim. The only resume control state. `None` after a bounded range completes, which a store must distinguish from "never started". |
+| `seen_uuids` | bounded set of recently-seen event `uuid`s, TTL'd by wall clock (default 24h). Covers source-side duplicates, **not** crash replay. |
 | `last_published` | most recent `published` seen. **Observability only.** Never used to resume. |
-| `mapping_version` | mapping table revision that produced the last write. |
+| `mapping_version` | mapping table revision that produced the last committed batch. Written with the cursor; read on startup to detect that the table moved under a resumed stream. |
 
-**The test that matters:** kill the process in the gap between sink-ack and
-cursor-commit, restart, and assert the sink contains each `uuid` exactly once.
-That test, more than any other artifact in this repo, is the thing worth pointing
-a buyer at.
+### 5.4 The tests that matter
+
+`tests/test_commit_order.py` kills the runner in the ack→commit gap, restarts it
+against the same durable state, and asserts every `uuid` lands exactly once —
+plus that a sink failure never advances the cursor, and that a replayed batch
+overwrites its object rather than adding one. Inverting the commit order in
+`runner/loop.py` fails three of them; a test that cannot fail is not evidence.
+That suite, more than any other artifact in this repo, is the thing worth
+pointing a buyer at.
 
 ---
 
