@@ -156,3 +156,23 @@ class CrashOnCommit:
 
     async def record_published(self, stream: str, published_ms: int) -> None:
         await self.inner.record_published(stream, published_ms)
+
+
+@dataclass(slots=True)
+class DriftingStartSource(ScriptedSource):
+    """A source whose *opening* cursor moves between calls.
+
+    This is what tail looks like when its ``since`` is computed from ``now()`` at
+    startup instead of read from config. Each new opening cursor aliases to the
+    same first page -- the vendor returns the same events either way; the only
+    thing that changed is the key the batch is addressed by. See docs/SPEC.md
+    §5.2.
+    """
+
+    starts: int = 0
+
+    async def start_tail(self, since: str) -> Cursor:
+        self.starts += 1
+        alias = f"s{self.starts}"
+        self.pages[alias] = self.pages["c0"]
+        return alias

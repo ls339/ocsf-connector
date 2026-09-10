@@ -14,6 +14,7 @@ from ocsf_connector.state.memory import InMemoryStateStore
 from tests.doubles import (
     CountingMapper,
     CrashOnCommit,
+    DriftingStartSource,
     FailingSink,
     RecordingSink,
     ScriptedSource,
@@ -251,3 +252,77 @@ async def test_commit_records_the_mapping_version_that_produced_the_batch() -> N
     )
 
     assert await store.get_mapping_version(STREAM) == "okta-2026.09.04"
+
+
+async def test_crash_before_the_first_commit_replays_into_the_same_object() -> None:
+    """The first batch has no stored cursor behind it -- it is addressed by
+    whatever the opening query resolved to (docs/SPEC.md §2.2). A stable opening
+    cursor makes the replay an overwrite, exactly like every later batch."""
+    source = ScriptedSource(chain([["a1"], ["b1"]]))
+    sink = RecordingSink()
+    durable = InMemoryStateStore()
+
+    with pytest.raises(SimulatedCrash):
+        await run(
+            source=source,
+            mapper=CountingMapper(),
+            sink=sink,
+            store=CrashOnCommit(durable, crash_on=1),
+            stream=STREAM,
+            start=lambda: source.start_tail("2026-09-05T00:00:00Z"),
+        )
+
+    assert await durable.get_cursor(STREAM) is None, "nothing committed yet"
+    assert sink.flushes == ["c0"]
+
+    await run(
+        source=ScriptedSource(source.pages),
+        mapper=CountingMapper(),
+        sink=sink,
+        store=durable,
+        stream=STREAM,
+        start=lambda: source.start_tail("2026-09-05T00:00:00Z"),
+    )
+
+    assert sorted(sink.objects) == ["c0", "c1"]
+    delivered = sink.delivered()
+    assert sorted(delivered) == ["a1", "b1"]
+    assert len(delivered) == len(set(delivered)), f"duplicates at the sink: {delivered}"
+
+
+async def test_a_moving_opening_cursor_breaks_first_batch_idempotency() -> None:
+    """Why docs/SPEC.md §5.2 requires tail's opening ``since`` to come from
+    configuration and never from ``now()``.
+
+    The runner cannot enforce it -- it has no way to know how ``start`` computed
+    its answer -- so the obligation sits with the mode entry point, and this test
+    is what keeps that obligation honest. If a change ever makes this test fail,
+    the runner has taken the guarantee over and §5.2 should be updated to say so.
+    """
+    source = DriftingStartSource(chain([["a1"], ["b1"]]))
+    sink = RecordingSink()
+    durable = InMemoryStateStore()
+
+    with pytest.raises(SimulatedCrash):
+        await run(
+            source=source,
+            mapper=CountingMapper(),
+            sink=sink,
+            store=CrashOnCommit(durable, crash_on=1),
+            stream=STREAM,
+            start=lambda: source.start_tail("2026-09-05T00:00:00Z"),
+        )
+
+    await run(
+        source=source,
+        mapper=CountingMapper(),
+        sink=sink,
+        store=durable,
+        stream=STREAM,
+        start=lambda: source.start_tail("2026-09-05T00:00:00Z"),
+    )
+
+    # The same page landed in two objects, keyed s1 and s2, because the opening
+    # cursor moved between the crash and the restart.
+    assert sink.flushes == ["s1", "s2", "c1"]
+    assert sink.delivered().count("a1") == 2

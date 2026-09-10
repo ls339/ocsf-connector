@@ -1,13 +1,15 @@
 """Source seam.
 
 A source knows how to authenticate to one vendor API, fetch one page of raw
-events, and hand back an opaque cursor for the next page. It knows nothing about
-OCSF and nothing about sinks.
+events, and hand back the cursor for the next page. It knows nothing about OCSF
+and nothing about sinks.
 
-The cursor is deliberately opaque: for Okta it is the verbatim ``next`` URL from
-the ``Link`` header, which the vendor documents as system-generated and not to be
-constructed by clients. Treating it as a string the connector never parses is
-what keeps resume correct. See docs/SPEC.md §2.1.
+A cursor is *the URL to GET next*. The source builds the **opening** one from a
+time range, because a stream has to be opened somehow; every cursor after that is
+the ``next`` URL lifted verbatim from the ``Link`` header. What the connector
+must never do is construct or read the ``after`` value inside that URL -- the
+vendor documents it as system-generated and not to be crafted by clients -- or
+derive a resume position from a timestamp. See docs/SPEC.md §2.1 and §2.2.
 """
 
 from __future__ import annotations
@@ -16,7 +18,12 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 Cursor = str
-"""Opaque resume token. Persisted verbatim; never parsed, never synthesized."""
+"""The URL to GET next.
+
+Persisted verbatim and never parsed. Only the *opening* cursor is built here, and
+only from configured query parameters; every later one comes from the vendor's
+``Link`` header. The ``after`` value inside is never constructed or read.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,11 +51,22 @@ class Source(Protocol):
         Called only when the state store has no cursor. Once a cursor exists,
         the runner resumes from it and never recomputes a start position from a
         timestamp -- doing so risks skipped or duplicated events.
+
+        ``since`` MUST come from configuration or a persisted stream origin,
+        never from ``now()``. The opening cursor is the first batch's
+        ``batch_key``, and a crash before the first commit calls this again: a
+        value that moved between the two calls addresses the replayed batch to a
+        second object instead of overwriting the first. See docs/SPEC.md §5.2.
         """
         ...
 
     async def start_backfill(self, since: str, until: str) -> Cursor:
-        """Open a bounded query over a closed time range."""
+        """Open a bounded query over a closed time range.
+
+        Both bounds are explicit configuration, so the opening cursor is stable
+        across restarts by construction -- the constraint ``start_tail`` has to
+        state is satisfied here for free.
+        """
         ...
 
     async def fetch(self, cursor: Cursor) -> Page:

@@ -66,6 +66,19 @@ in `next` links. Don't attempt to craft requests that use this value."
 So the connector persists the **entire next URL** verbatim, treats it as opaque,
 and never parses or reconstructs it.
 
+**What a cursor is, precisely.** A cursor is *the URL to GET next*. The source
+builds the **opening** cursor — `/api/v1/logs?since=…&sortOrder=ASCENDING` for
+tail, `since` + `until` for backfill — because a stream has to be opened somehow.
+Every cursor after that is the `next` URL lifted verbatim from the `Link` header.
+
+The opacity rule is therefore about `after`, not about the URL. The connector
+never constructs or reads an `after`, and never derives a resume position from a
+timestamp. Building the opening query from `since` violates neither: it is the
+documented way to open a stream, and it cannot degrade into a resume path,
+because the runner calls it only when the store holds no cursor
+(`runner/loop.py`, §5). The opening `since` is load-bearing for a different
+reason — see §5.2.
+
 In tail mode, the `next` link is always present and the page may be empty. An
 empty page is not an error and not an end-of-stream — it means "no new events
 yet." The runner sleeps and re-requests the *same* next URL.
@@ -303,6 +316,18 @@ Exactly-once across a crash rests instead on **the sink write being idempotent**
   the events it drops are picked up by the batch starting where it ended — so
   differing batch boundaries are self-healing, not a leak.
 
+**The first batch is the exception, and it is the caller's to close.** Before the
+first commit there is no stored cursor, so the batch is keyed by whatever the
+opening query resolved to (§2.2). Crash in that first ack→commit gap and the
+runner restarts with the store still empty, opens the stream again, and addresses
+the replayed batch by the *new* opening URL — a second object, not an overwrite.
+The opening cursor must therefore be stable across restarts, which means tail's
+`since` comes from configuration or a persisted stream origin and **never from
+`now()`**. The runner cannot enforce this; it has no way to know how `start()`
+computed its answer. It is an obligation on the mode entry point (§6), and
+`tests/test_commit_order.py` pins both halves — that a stable origin replays into
+one object, and that a moving one does not.
+
 The consequence for §4: object naming is not a cosmetic choice. `batch_key` is
 an opaque cursor and must be escaped or hashed before it becomes a path segment.
 
@@ -320,8 +345,11 @@ an opaque cursor and must be escaped or hashed before it becomes a path segment.
 `tests/test_commit_order.py` kills the runner in the ack→commit gap, restarts it
 against the same durable state, and asserts every `uuid` lands exactly once —
 plus that a sink failure never advances the cursor, and that a replayed batch
-overwrites its object rather than adding one. Inverting the commit order in
-`runner/loop.py` fails three of them; a test that cannot fail is not evidence.
+overwrites its object rather than adding one. Two more cover the first batch,
+which has no stored cursor behind it: a stable opening cursor replays into one
+object, and a moving one does not (§5.2). Inverting the commit order in
+`runner/loop.py` fails five of them, and making `batch_key` unstable fails four;
+a test that cannot fail is not evidence.
 That suite, more than any other artifact in this repo, is the thing worth
 pointing a buyer at.
 
@@ -331,7 +359,10 @@ pointing a buyer at.
 
 **Tail** — polling query (`sortOrder=ASCENDING`, no `until`), resumes from the
 stored cursor, follows `next` forever, sleeps on empty pages, respects the
-per-token 60/min budget.
+per-token 60/min budget. Its opening `since` — read only when the store holds no
+cursor — comes from configuration or a persisted stream origin, **never from
+`now()` at startup**. That is a correctness constraint, not a preference: §5.2
+shows the duplicate object it prevents.
 
 **Backfill** — bounded query (`since` + `until`), paginates until `next` is
 absent, then exits. Shares the mapper, sink, state store, and dedup set with tail

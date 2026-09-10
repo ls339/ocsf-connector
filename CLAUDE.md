@@ -19,8 +19,10 @@ uv run mypy src         # types (strict)
 1. **The cursor is the only resume state.** Never resume from a timestamp. Okta
    polling queries are ordered by persistence time and may return events out of
    order by `published`; a timestamp watermark drops events silently.
-2. **The cursor is opaque.** Persist the `next` URL verbatim. Never parse it,
-   never construct an `after` value.
+2. **A cursor is the URL to GET next; its `after` is opaque.** Only the opening
+   query is built here, from a configured `since`; persist every later `next`
+   URL verbatim. Never parse a cursor, never construct an `after` value. Tail's
+   opening `since` comes from config, never `now()` — see SPEC §5.2.
 3. **Commit the cursor only after the sink acknowledges.** `Sink.flush()`
    returning cleanly is the ack. Nothing else licenses a commit.
 4. **Mapping never raises and never drops.** Unknown `eventType` degrades to a

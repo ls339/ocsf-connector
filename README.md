@@ -50,7 +50,7 @@ of that section was not.
 
 The tests worth reading are in `tests/test_commit_order.py`: they kill the runner
 inside that gap and assert each `uuid` lands exactly once. Inverting the commit
-order fails three of them.
+order fails five of them; making the batch key unstable fails four.
 
 **3. The sink's schema ceiling is below the spec's.**
 
