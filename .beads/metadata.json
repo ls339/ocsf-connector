@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "ocsf_connector",
+  "project_id": "40729ae0-7029-4706-b18a-1aa03c305184"
+}
