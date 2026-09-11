@@ -1,6 +1,7 @@
 # SPEC: Okta System Log → OCSF → Amazon Security Lake
 
-**Status:** v1 design, pinned to vendor docs verified 2026-09-02.
+**Status:** v1 design, pinned to vendor docs verified 2026-09-02; §2.1, §2.2,
+§2.6 and the `limit` bound in §2.3 checked again 2026-09-11.
 **Scope discipline:** one source, one sink, end to end. The plugin seam is visible
 but not generalized. Second sink and second source come after v1 ships.
 
@@ -17,8 +18,9 @@ between two systems correctly**, under the failure modes that actually occur —
 restarts, rate limits, out-of-order delivery, and schema drift on both ends.
 
 Everything below that is marked **[verified]** is quoted or derived from vendor
-documentation checked on 2026-09-02, with the source linked in §8. Anything not
-marked verified is a design decision made here, not a fact about a vendor.
+documentation, with the source and the date it was checked listed in §8.
+Anything not marked verified is a design decision made here, not a fact about a
+vendor.
 
 ---
 
@@ -35,14 +37,26 @@ guarantees:
 |---|---|---|
 | Parameters | `since`, **no `until`**, `sortOrder=ASCENDING` | both `since` and `until` |
 | Ordered by | internal **persistence** time | the `published` field |
-| `next` link | **always present**, even when the page is empty | may be absent on the final page |
+| `next` link | **always present**, even when the page is empty | **absent on the last page** |
 | Terminates | never — it is a stream | yes |
 | Used for | tail mode | backfill mode |
 
 **[verified]** A polling query "may return events out of order according to the
 `published` field," because it is ordered by persistence time rather than
-publication time. Separately, "not all events for the specified time range may be
-present. Some events may be delayed. Such delays are rare but possible."
+publication time. A bounded query is the reverse: its events "are guaranteed to be
+in order according to the `published` field," but "not all events for the
+specified time range may be present. Some events may be delayed. Such delays are
+rare but possible." Okta states that caveat under bounded requests, not polling.
+It is why a backfill range that ends near the present cannot be assumed complete,
+and why the dedup set has to cover the overlap where backfill meets the tail
+(§5.2).
+
+**[verified]** The OpenAPI reference describes `sortOrder` as "the order of the
+returned events that are sorted by the `published` property," with no polling
+exception. Its `since` and `until` descriptions do draw the line ("persistence
+time for polling queries"), and the query guide is explicit, so this document
+follows the guide. Read alone, the `sortOrder` description suggests a timestamp
+watermark is safe. It is not.
 
 **This is the single most important fact in this document.** It means:
 
@@ -66,6 +80,12 @@ in `next` links. Don't attempt to craft requests that use this value."
 So the connector persists the **entire next URL** verbatim, treats it as opaque,
 and never parses or reconstructs it.
 
+**[verified]** Okta's own documentation shows why verbatim has to mean
+byte-for-byte. It states that "`since` and `after` are mutually exclusive and can't
+be specified simultaneously," yet its sample `next` link carries both. A client
+that tidied a `next` URL to match the stated rule would send a request Okta never
+generated. Fixtures copy the documented shape, `since` included.
+
 **What a cursor is, precisely.** A cursor is *the URL to GET next*. The source
 builds the **opening** cursor — `/api/v1/logs?since=…&sortOrder=ASCENDING` for
 tail, `since` + `until` for backfill — because a stream has to be opened somehow.
@@ -81,7 +101,23 @@ reason — see §5.2.
 
 In tail mode, the `next` link is always present and the page may be empty. An
 empty page is not an error and not an end-of-stream — it means "no new events
-yet." The runner sleeps and re-requests the *same* next URL.
+yet." The runner sleeps, then requests the `next` URL that the empty page
+returned. Okta does not say whether that URL equals the one just requested, so
+the runner does not assume it.
+
+**Termination.** **[verified]** A bounded query has "a finite number of pages.
+That is, the last page doesn't contain a `next` link relation header." That
+absence is the only end-of-range signal: the runner ends a backfill on
+`Page.next_cursor is None` and on nothing else. Okta does not say whether a
+bounded query can return an empty page that still carries `next`; if one does,
+the runner follows the link like any other page. The link decides, not the page
+size.
+
+**[verified]** Okta's export example says to "continue this process until no
+events are returned." That example is `?since=…` with no `until`, and `sortOrder`
+defaults to `ASCENDING`, so by Okta's own criteria it is a *polling* query, which
+never ends. "No events" there means caught up — tail's idle condition. The
+connector does not use it as a termination rule in either mode.
 
 ### 2.3 Rate limits
 
@@ -99,6 +135,13 @@ Design consequences:
   Unjittered reset-time sleeps make every client in the org wake simultaneously.
 - Proactively throttle on `X-Rate-Limit-Remaining` rather than waiting for the
   429. The connector shares the org budget with whatever else the customer runs.
+- **[verified]** `limit` defaults to 100 and accepts an "Integer between 0 and
+  1000". At ~1 request/second, page size is the throughput ceiling: about 6,000
+  events/minute at the default, 60,000 at 1000. Okta's sample `next` link keeps
+  the `limit` of the query that produced it, so the value is chosen once, in the
+  opening query. On a stream that has committed, changing the configured `limit`
+  has no effect, because resume follows the stored cursor; before the first
+  commit it moves the opening cursor, which §5.2 shows is unsafe.
 
 ### 2.4 Authentication
 
@@ -126,6 +169,24 @@ Fields consumed from each log event: `uuid`, `published`, `eventType`,
 `debugContext`.
 
 `uuid` is the dedup key. `eventType` is the mapping key.
+
+### 2.6 Retention
+
+**[verified]** "System Log data older than 90 days isn't returned … Queries that
+exceed the retention period succeed, but only those results that have a
+`published` timestamp within the window are returned."
+
+Retention loss is silent, and it reaches this connector two ways:
+
+- An opening `since` older than 90 days opens without error at the edge of the
+  window. Everything before that is gone, and nothing in the response says so.
+- A stream left unconsumed for longer than the window resumes from a cursor
+  whose events have aged out. Okta does not say whether a stale `after` still
+  resolves; if it does, the runner resumes over a gap without error.
+
+v1 detects neither yet. Both are checkable outside the response — the configured
+`since` against the clock at startup, and the age of the last commit — and both
+belong in §7 before v1 ships.
 
 ---
 
@@ -392,10 +453,11 @@ Emitted as OpenTelemetry metrics:
 
 ## 8. Sources verified 2026-09-02
 
-- [Okta — System Log query](https://developer.okta.com/docs/reference/system-log-query/) — polling vs bounded, ordering, `next` links, `after`, delayed events
+- [Okta — System Log query](https://developer.okta.com/docs/reference/system-log-query/) — polling vs bounded, ordering, `next` links, `after`, delayed events; termination, retention, the export example (checked again 2026-09-11)
 - [Okta — Rate limits](https://developer.okta.com/docs/reference/rate-limits/) — `/api/v1/logs` 120/min org, 60/min per token
 - [Okta — Implement OAuth for Okta with a service app](https://developer.okta.com/docs/guides/implement-oauth-for-okta-serviceapp/main/) — client credentials + `private_key_jwt` only
-- [Okta — System Log API](https://developer.okta.com/docs/api/openapi/okta-management/management/tags/systemlog)
+- [Okta — System Log API](https://developer.okta.com/docs/api/openapi/okta-management/management/tags/systemlog) — renders client-side; read from its source, below
+- [Okta — Management OpenAPI spec, `dist/2026.08.4/management-minimal.yaml`](https://github.com/okta/okta-management-openapi-spec/blob/master/dist/2026.08.4/management-minimal.yaml) — `listLogEvents`: `limit` 0–1000 default 100, `sortOrder` default `ASCENDING`, `sortOrder` wording (checked 2026-09-11)
 - [OCSF schema browser](https://schema.ocsf.io/) — v1.9.0, IAM category 3, class UIDs
 - [OCSF — Authentication (3002)](https://schema.ocsf.io/1.9.0/classes/authentication) — activity IDs, required attributes, `type_uid` formula
 - [AWS — Collecting data from custom sources in Security Lake](https://docs.aws.amazon.com/security-lake/latest/userguide/custom-sources.html) — OCSF 1.3 ceiling, Parquet/zstd, partitioning, one class per object

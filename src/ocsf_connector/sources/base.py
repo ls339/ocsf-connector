@@ -36,7 +36,8 @@ class Page:
 
     In polling mode the vendor always returns a next cursor, even for an empty
     page, so ``records == [] and next_cursor is not None`` means "caught up",
-    not "finished".
+    not "finished". Bounded mode is no different: only a missing ``next`` ends
+    a range, never an empty page. See docs/SPEC.md §2.2.
     """
 
 
