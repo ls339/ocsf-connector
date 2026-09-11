@@ -24,3 +24,4 @@ out/
 *.tfstate
 *.tfstate.*
 .DS_Store
+.claude/settings.local.json
