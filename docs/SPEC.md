@@ -86,6 +86,17 @@ be specified simultaneously," yet its sample `next` link carries both. A client
 that tidied a `next` URL to match the stated rule would send a request Okta never
 generated. Fixtures copy the documented shape, `since` included.
 
+**Reading `next`, and where a cursor may point.** The `next` cursor is the exact
+text between the angle brackets of the `rel="next"` link-value. A generic `Link`
+parser is not good enough — httpx's `Response.links`, for one, splits a URL that
+contains `;`. Before any GET, the source checks one thing about a cursor: that it
+begins with the configured org's `https://…/api/v1/logs?`. That reads no
+parameter and derives no position; it keeps the bearer token on this org's logs
+endpoint if a state store ever hands back something else. It assumes Okta's
+`next` links use the host the request was sent to. The pages in §8 do not state
+that, and it is the first thing to confirm against a live org — custom domains
+especially.
+
 **What a cursor is, precisely.** A cursor is *the URL to GET next*. The source
 builds the **opening** cursor — `/api/v1/logs?since=…&sortOrder=ASCENDING` for
 tail, `since` + `until` for backfill — because a stream has to be opened somehow.
@@ -139,9 +150,10 @@ Design consequences:
   1000". At ~1 request/second, page size is the throughput ceiling: about 6,000
   events/minute at the default, 60,000 at 1000. Okta's sample `next` link keeps
   the `limit` of the query that produced it, so the value is chosen once, in the
-  opening query. On a stream that has committed, changing the configured `limit`
-  has no effect, because resume follows the stored cursor; before the first
-  commit it moves the opening cursor, which §5.2 shows is unsafe.
+  opening query — v1 chooses 1000. On a stream that has committed, changing the
+  configured `limit` has no effect, because resume follows the stored cursor;
+  before the first commit it moves the opening cursor, which §5.2 shows is
+  unsafe.
 
 ### 2.4 Authentication
 

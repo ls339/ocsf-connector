@@ -1,0 +1,114 @@
+[
+  {
+    "uuid": "00000000-0000-4000-8000-000000000001",
+    "published": "2026-09-05T00:00:01.000Z",
+    "eventType": "user.session.start",
+    "version": "0",
+    "severity": "INFO",
+    "legacyEventType": "core.user_auth.login_success",
+    "displayMessage": "User login to Okta",
+    "actor": {
+      "id": "00usynthetic00000001",
+      "type": "User",
+      "alternateId": "alex.example@example.com",
+      "displayName": "Alex Example",
+      "detailEntry": null
+    },
+    "client": {
+      "userAgent": {
+        "rawUserAgent": "Mozilla/5.0 (Synthetic) SyntheticBrowser/1.0",
+        "os": "Synthetic OS",
+        "browser": "SYNTHETIC"
+      },
+      "zone": "null",
+      "device": "Computer",
+      "id": null,
+      "ipAddress": "192.0.2.10",
+      "geographicalContext": {
+        "city": "Exampleville",
+        "state": "Example State",
+        "country": "Exampleland",
+        "postalCode": "00000",
+        "geolocation": {"lat": 0.0, "lon": 0.0}
+      }
+    },
+    "outcome": {"result": "SUCCESS", "reason": null},
+    "target": null,
+    "transaction": {"type": "WEB", "id": "synthetic-transaction-0001", "detail": {}},
+    "debugContext": {"debugData": {"requestUri": "/api/v1/authn", "url": "/api/v1/authn?"}},
+    "authenticationContext": {
+      "authenticationProvider": "OKTA_AUTHENTICATION_PROVIDER",
+      "credentialProvider": null,
+      "credentialType": null,
+      "issuer": null,
+      "interface": null,
+      "authenticationStep": 0,
+      "externalSessionId": "synthetic-session-0001"
+    },
+    "securityContext": {
+      "asNumber": 64496,
+      "asOrg": "synthetic as",
+      "isp": "synthetic isp",
+      "domain": "example.net",
+      "isProxy": false
+    },
+    "request": {"ipChain": [{"ip": "192.0.2.10", "version": "V4", "source": null}]}
+  },
+  {
+    "uuid": "00000000-0000-4000-8000-000000000002",
+    "published": "2026-09-05T00:00:02.000Z",
+    "eventType": "user.authentication.auth_via_mfa",
+    "version": "0",
+    "severity": "WARN",
+    "legacyEventType": "core.user.factor.attempt_fail",
+    "displayMessage": "Authentication of user via MFA",
+    "actor": {
+      "id": "00usynthetic00000002",
+      "type": "User",
+      "alternateId": "sam.example@example.com",
+      "displayName": "Sam Example",
+      "detailEntry": null
+    },
+    "client": {
+      "userAgent": {
+        "rawUserAgent": "Mozilla/5.0 (Synthetic) SyntheticBrowser/1.0",
+        "os": "Synthetic OS",
+        "browser": "SYNTHETIC"
+      },
+      "zone": "null",
+      "device": "Computer",
+      "id": null,
+      "ipAddress": "198.51.100.20",
+      "geographicalContext": null
+    },
+    "outcome": {"result": "FAILURE", "reason": "INVALID_CREDENTIALS"},
+    "target": [
+      {
+        "id": "00fsynthetic00000001",
+        "type": "AuthenticatorEnrollment",
+        "alternateId": "unknown",
+        "displayName": "Okta Verify",
+        "detailEntry": null
+      }
+    ],
+    "transaction": {"type": "WEB", "id": "synthetic-transaction-0002", "detail": {}},
+    "debugContext": {"debugData": {"factor": "OKTA_VERIFY_PUSH"}},
+    "authenticationContext": {
+      "authenticationProvider": "FACTOR_PROVIDER",
+      "credentialProvider": "OKTA_CREDENTIAL_PROVIDER",
+      "credentialType": null,
+      "issuer": null,
+      "interface": null,
+      "authenticationStep": 0,
+      "externalSessionId": "synthetic-session-0002"
+    },
+    "securityContext": {
+      "asNumber": 64497,
+      "asOrg": "synthetic as",
+      "isp": "synthetic isp",
+      "domain": "example.org",
+      "isProxy": false
+    },
+    "request": {"ipChain": [{"ip": "198.51.100.20", "version": "V4", "source": null}]}
+  }
+]
