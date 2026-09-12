@@ -5,8 +5,8 @@ The only URLs built here are the two opening queries. Every later cursor is the
 (docs/SPEC.md §2.2). Rate limits and transient failures are absorbed here, so
 the runner sees either a page or a failure worth stopping for (§2.3).
 
-Credentials sit behind :class:`TokenProvider`; nothing in this module touches a
-key (§2.4).
+Credentials sit behind :class:`Authorizer`, asked once per request because a
+DPoP proof commits to one method and one URL; nothing here touches a key (§2.4).
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from urllib.parse import urlencode
 import httpx
 
 from ocsf_connector.sources.base import Cursor, Page
-from ocsf_connector.sources.okta.auth import TokenProvider
+from ocsf_connector.sources.okta.auth import Authorizer
 
 LOGS_PATH = "/api/v1/logs"
 
@@ -71,7 +71,7 @@ class OktaSource:
     org_url: str
     """``https://{yourOktaDomain}``. Every cursor must be a query on its logs endpoint."""
     client: httpx.AsyncClient
-    tokens: TokenProvider
+    auth: Authorizer
     name: str = "okta"
     limit: int = MAX_LIMIT
     rate_limit_reserve: int = 5
@@ -118,11 +118,14 @@ class OktaSource:
             try:
                 # httpx does not follow redirects by default, so a 3xx surfaces
                 # as an error below rather than carrying the token elsewhere.
+                # Asked per attempt, not once per fetch: a DPoP proof is bound to
+                # this method and URL and is single-use, so a retry needs its own
+                # (docs/SPEC.md §2.4).
                 response = await self.client.get(
                     cursor,
                     headers={
                         "Accept": "application/json",
-                        "Authorization": f"Bearer {await self.tokens.token()}",
+                        **await self.auth.headers("GET", cursor),
                     },
                     timeout=REQUEST_TIMEOUT_SECONDS,
                 )

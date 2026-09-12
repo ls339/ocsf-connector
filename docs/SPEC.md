@@ -95,7 +95,8 @@ parameter and derives no position; it keeps the bearer token on this org's logs
 endpoint if a state store ever hands back something else. It assumes Okta's
 `next` links use the host the request was sent to. The pages in §8 do not state
 that, and it is the first thing to confirm against a live org — custom domains
-especially.
+especially. The DPoP proof's `htu` splits the same URL at the `?` (§2.4); those
+two are the only reads of a cursor's text anywhere in the connector.
 
 **What a cursor is, precisely.** A cursor is *the URL to GET next*. The source
 builds the **opening** cursor — `/api/v1/logs?since=…&sortOrder=ASCENDING` for
@@ -146,6 +147,11 @@ Design consequences:
   Unjittered reset-time sleeps make every client in the org wake simultaneously.
 - Proactively throttle on `X-Rate-Limit-Remaining` rather than waiting for the
   429. The connector shares the org budget with whatever else the customer runs.
+- **[verified]** "By default, all new apps consume 50% of every API's rate
+  limits", adjustable per app in the Admin Console. Half of the 120/min
+  `/api/v1/logs` bucket is 60/min — the same order as the per-token cap, so the
+  ~1 request/second budget stands. It is worth knowing anyway: an admin can move
+  that slider down, and the rest of the bucket is shared with everything else.
 - **[verified]** `limit` defaults to 100 and accepts an "Integer between 0 and
   1000". At ~1 request/second, page size is the throughput ceiling: about 6,000
   events/minute at the default, 60,000 at 1000. Okta's sample `next` link keeps
@@ -172,6 +178,45 @@ Design consequences:
   secrets manager at startup and never read from a config file in the repo.
   Key rotation is supported by keying on the JWK `kid` so two keys can be valid
   during a rollover.
+
+**[verified] The token request.** POST to the **org** authorization server at
+`https://{yourOktaDomain}/oauth2/v1/token` — not `/oauth2/default` — form
+encoded: `grant_type=client_credentials`, `scope` (space separated),
+`client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer`,
+`client_assertion`. The assertion carries `iss` = `sub` = client ID and `aud` =
+that token URL, and Okta rejects an `exp` "more than one hour in the future".
+`jti` is optional and makes the assertion single-use, so a fresh one is minted
+per request. The signing `alg` — RS256/384/512 or ES256/384/512 — belongs in the
+JWT header, with `kid` naming the registered key. The response is `token_type`
+`Bearer`, `expires_in` 3600, and the lifetime is "fixed at one hour."
+
+**[verified] DPoP changes the shape of every request.** A service app can require
+Demonstrating Proof-of-Possession. Okta's own DPoP walkthrough has the reader
+*turn it off* on a newly created API Services app, which is evidence that it
+defaults on — no page states the default outright. With it on:
+
+- The DPoP key pair is **separate** from the client-authentication key pair.
+- The token POST carries a `DPoP` proof: header `typ` `dpop+jwt`, an asymmetric
+  `alg`, and the **public** JWK; payload `htm`, `htu`, `iat`. Okta refuses the
+  first one with `400 use_dpop_nonce` and a `dpop-nonce` header; the retry adds
+  that `nonce` and a `jti`. The nonce is renewed every 24 hours and the previous
+  value keeps working for three days, so it is cached rather than re-fetched.
+- The response is `token_type` `DPoP`, and every API request then needs
+  `Authorization: DPoP {token}` plus a **fresh** proof carrying `ath` (base64url
+  SHA-256 of the token), `htm`, `htu`, `iat`, `jti`. Okta says the nonce "isn't
+  currently required" in that proof.
+
+v1 speaks both. A Bearer-only connector would ask the customer to weaken their
+app to run it, which is a poor trade in a tool whose subject is security data.
+The seam is therefore per request — `Authorizer.headers(method, url)` — because
+a proof commits to one method and one URL and may not be replayed on a retry. The
+returned `token_type` is checked against the configured mode, so an app whose
+DPoP setting disagrees with the config fails with a message naming the fix.
+
+**[verified]** RFC 9449 §4.2 defines `htu` as the target URI "without query and
+fragment parts". For a cursor that means everything before the `?` — with the
+origin check in §2.2, one of exactly two places this connector reads a cursor's
+text, and like that one it reads no parameter.
 
 ### 2.5 Event shape
 
@@ -467,7 +512,12 @@ Emitted as OpenTelemetry metrics:
 
 - [Okta — System Log query](https://developer.okta.com/docs/reference/system-log-query/) — polling vs bounded, ordering, `next` links, `after`, delayed events; termination, retention, the export example (checked again 2026-09-11)
 - [Okta — Rate limits](https://developer.okta.com/docs/reference/rate-limits/) — `/api/v1/logs` 120/min org, 60/min per token
-- [Okta — Implement OAuth for Okta with a service app](https://developer.okta.com/docs/guides/implement-oauth-for-okta-serviceapp/main/) — client credentials + `private_key_jwt` only
+- [Okta — Implement OAuth for Okta with a service app](https://developer.okta.com/docs/guides/implement-oauth-for-okta-serviceapp/main/) — client credentials + `private_key_jwt` only; token endpoint, assertion claims, `token_type` Bearer / `expires_in` 3600 (checked 2026-09-11)
+- [Okta — Build a JWT for client authentication](https://developer.okta.com/docs/guides/build-self-signed-jwt/java/main/) — assertion claim table: `aud`, `exp` ≤ 1h, `iss`, `sub`, optional single-use `jti` (checked 2026-09-11)
+- [Okta — Configure OAuth 2.0 Demonstrating Proof-of-Possession (Okta resource server)](https://developer.okta.com/docs/guides/dpop/oktaresourceserver/main/) — proof claims, nonce handshake, `ath`, `Authorization: DPoP` (checked 2026-09-11)
+- [Okta — How to Build Secure Okta Node.js Integrations with DPoP](https://developer.okta.com/blog/2024/10/23/dpop-oauth-node) — the walkthrough that disables Require DPoP on a new API Services app (checked 2026-09-11)
+- [Okta — Create OIDC app integrations](https://help.okta.com/en-us/Content/Topics/Apps/Apps_App_Integration_Wizard_OIDC.htm) — the Require DPoP setting; new apps consume 50% of every API rate limit (checked 2026-09-11)
+- [RFC 9449 — OAuth 2.0 Demonstrating Proof of Possession (DPoP)](https://www.rfc-editor.org/rfc/rfc9449.txt) — §4.2 `htu` excludes query and fragment; `ath`, `jti`, nonce (checked 2026-09-11)
 - [Okta — System Log API](https://developer.okta.com/docs/api/openapi/okta-management/management/tags/systemlog) — renders client-side; read from its source, below
 - [Okta — Management OpenAPI spec, `dist/2026.08.4/management-minimal.yaml`](https://github.com/okta/okta-management-openapi-spec/blob/master/dist/2026.08.4/management-minimal.yaml) — `listLogEvents`: `limit` 0–1000 default 100, `sortOrder` default `ASCENDING`, `sortOrder` wording (checked 2026-09-11)
 - [OCSF schema browser](https://schema.ocsf.io/) — v1.9.0, IAM category 3, class UIDs

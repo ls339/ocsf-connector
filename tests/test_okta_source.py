@@ -36,13 +36,18 @@ NEXT_2 = (
 )
 
 
-class StaticTokens:
+class StaticAuth:
+    """Stands in for the auth seam (docs/SPEC.md §2.4): a fixed Bearer header,
+    and a count of how often the source asked for one."""
+
     def __init__(self) -> None:
         self.calls = 0
+        self.asked_for: list[tuple[str, str]] = []
 
-    async def token(self) -> str:
+    async def headers(self, method: str, url: str) -> dict[str, str]:
         self.calls += 1
-        return TOKEN
+        self.asked_for.append((method, url))
+        return {"Authorization": f"Bearer {TOKEN}"}
 
 
 class FakeTime:
@@ -90,13 +95,13 @@ def page(
 def make_source(
     client: httpx.AsyncClient,
     fake_time: FakeTime,
-    tokens: StaticTokens | None = None,
+    auth: StaticAuth | None = None,
     **overrides: Any,
 ) -> OktaSource:
     return OktaSource(
         org_url=ORG,
         client=client,
-        tokens=tokens or StaticTokens(),
+        auth=auth or StaticAuth(),
         clock=fake_time.clock,
         sleep=fake_time.sleep,
         jitter=lambda: 0.5,
@@ -125,7 +130,7 @@ async def test_opening_cursors_are_built_from_config_alone(client: httpx.AsyncCl
     def no_clock() -> float:
         raise AssertionError("an opening cursor must not read the clock")
 
-    source = OktaSource(org_url=f"{ORG}/", client=client, tokens=StaticTokens(), clock=no_clock)
+    source = OktaSource(org_url=f"{ORG}/", client=client, auth=StaticAuth(), clock=no_clock)
 
     tail = await source.start_tail(SINCE)
     assert tail == f"{LOGS}?since=2026-09-05T00%3A00%3A00Z&sortOrder=ASCENDING&limit=1000"
@@ -142,12 +147,12 @@ async def test_a_limit_outside_oktas_bounds_is_refused(
     client: httpx.AsyncClient, limit: int
 ) -> None:
     with pytest.raises(ValueError, match="limit"):
-        OktaSource(org_url=ORG, client=client, tokens=StaticTokens(), limit=limit)
+        OktaSource(org_url=ORG, client=client, auth=StaticAuth(), limit=limit)
 
 
 async def test_a_plain_http_org_url_is_refused(client: httpx.AsyncClient) -> None:
     with pytest.raises(ValueError, match="https"):
-        OktaSource(org_url="http://synthetic.okta.example", client=client, tokens=StaticTokens())
+        OktaSource(org_url="http://synthetic.okta.example", client=client, auth=StaticAuth())
 
 
 # --- fetching a page --------------------------------------------------------
@@ -223,12 +228,12 @@ async def test_a_cursor_off_this_orgs_logs_endpoint_is_refused_before_any_reques
     client: httpx.AsyncClient, fake_time: FakeTime, respx_mock: respx.MockRouter, cursor: str
 ) -> None:
     """No route is mocked, so any request at all would fail this test."""
-    tokens = StaticTokens()
+    auth = StaticAuth()
 
     with pytest.raises(ValueError, match="cursor"):
-        await make_source(client, fake_time, tokens).fetch(cursor)
+        await make_source(client, fake_time, auth).fetch(cursor)
 
-    assert tokens.calls == 0, "the token was never even minted for it"
+    assert auth.calls == 0, "no credential was even minted for it"
 
 
 # --- rate limits ------------------------------------------------------------
