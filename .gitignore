@@ -31,3 +31,8 @@ out/
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Per-machine bd activity log. bd appends to it on every command, so tracking it
+# dirties the tree constantly and conflicts on merge. Kept here rather than in
+# .beads/.gitignore, which bd manages and may regenerate.
+.beads/interactions.jsonl
