@@ -261,38 +261,65 @@ detail to paper over; it is the versioning story:
 - The mapper is **parameterized by target OCSF version**. v1 emits **1.3.0** for
   the Security Lake sink because that is the hard constraint.
 - The version emitted is recorded in `metadata.version` on every event, and the
-  mapping table carries its own independent version in
-  `metadata.processed_time`-adjacent producer fields, so any record can be traced
-  to the mapping revision that produced it.
+  mapping table's own revision rides in `metadata.labels` as
+  `okta-ocsf-mapping:{version}`, so any record can be traced to the rules that
+  produced it.
 - Future sinks (Splunk HEC, Datadog Logs) have no such ceiling and can take 1.9.
 
 ### 3.2 Class model
 
-**[verified]** Identity & Access Management is `category_uid` **3**. Classes:
+**[verified]** Identity & Access Management is `category_uid` **3**. These are the
+classes **OCSF 1.3.0** defines — the version this connector emits (§3.1). 1.9.0
+adds User Management (3007) and Role Management (3008), which do not exist in
+1.3.0; the mapping table may not name them.
 
-| class_uid | Class |
-|---|---|
-| 3001 | Account Change |
-| 3002 | Authentication |
-| 3003 | Authorize Session |
-| 3004 | Entity Management |
-| 3005 | User Access Management |
-| 3006 | Group Management |
-| 3007 | User Management |
-| 3008 | Role Management |
+| class_uid | Class | Required beyond the base event | Constraint |
+|---|---|---|---|
+| 3001 | Account Change | `user` | — |
+| 3002 | Authentication | `user` | at least one of `service`, `dst_endpoint` |
+| 3003 | Authorize Session | `user` | exactly one of `privileges`, `group` |
+| 3004 | Entity Management | `entity` | — |
+| 3005 | User Access Management | `user`, `privileges` | — |
+| 3006 | Group Management | `group` | at least one of `privileges`, `user` |
 
-**[verified]** `type_uid = class_uid * 100 + activity_id`.
+**[verified]** `type_uid = class_uid * 100 + activity_id`, computed by the
+producer. Base Event is `class_uid` **0** in `category_uid` **0**, and it is
+emittable in its own right — which is what §3.3's fallback rests on.
 
-**[verified]** Authentication (3002) `activity_id` values: 0 Unknown, 1 Logon,
-2 Logoff, 3 Authentication Ticket, 4 Service Ticket Request, 5 Service Ticket
-Renew, 6 Preauth, 7 Account Switch, 99 Other.
+**[verified]** Every class above also requires the base event's `activity_id`,
+`category_uid`, `class_uid`, `metadata`, `severity_id`, `time` and `type_uid`.
+`status_id` is only **recommended** in 1.3.0, and `unmapped` is optional.
 
-**[verified]** Authentication required attributes: `time`, `metadata`,
-`category_uid`, `class_uid`, `type_uid`, `severity_id`, `status_id`,
-`activity_id`, `user`. Recommended: `actor`, `src_endpoint`, `auth_protocol_id`,
-`logon_type_id`, `session`, `is_mfa`, `message`, `status`, `observables`.
-**[verified]** Constraint: at minimum either `dst_endpoint` **or** `service` must
-be present — for Okta, populate `service` with the Okta org / application target.
+**[verified] Two required-looking attributes are not required.** The schema shows
+`cloud` and `osint` as required on every class, but both belong to opt-in
+**profiles** of the same names. This connector enables no profiles and emits
+neither. Reading a requirement without its profile is the trap here.
+
+**[verified]** Authentication (3002) `activity_id`: 0 Unknown, 1 Logon, 2 Logoff,
+3 Authentication Ticket, 4 Service Ticket Request, 5 Service Ticket Renew,
+6 Preauth, 99 Other. **1.3.0 has no 7 Account Switch** — that arrives in a later
+version, and a table naming it emits records the target version rejects.
+
+**[verified]** The other enums the table draws on, each also carrying 0 Unknown
+and 99 Other: Account Change (3001) 1 Create, 2 Enable, 3 Password Change,
+4 Password Reset, 5 Disable, 6 Delete, 7 Attach Policy, 8 Detach Policy, 9 Lock,
+10 MFA Factor Enable, 11 MFA Factor Disable; Authorize Session (3003) 1 Assign
+Privileges, 2 Assign Groups; Entity Management (3004) 1 Create, 2 Read, 3 Update,
+4 Delete, 5 Move, 6 Enroll, 7 Unenroll, 8 Enable, 9 Disable, 10 Activate,
+11 Deactivate, 12 Suspend, 13 Resume; User Access (3005) 1 Assign Privileges,
+2 Revoke Privileges; Group Management (3006) 1 Assign Privileges, 2 Revoke
+Privileges, 3 Add User, 4 Remove User, 5 Delete, 6 Create.
+
+**[verified]** `status_id`: 0 Unknown, 1 Success, 2 Failure, 99 Other.
+`severity_id`: 0 Unknown, 1 Informational, 2 Low, 3 Medium, 4 High, 5 Critical,
+6 Fatal, 99 Other.
+
+**Which attributes a class has is not uniform**, so the mapper checks instead of
+assuming: only Authentication defines `service`, `session` and `is_mfa`; Entity
+Management defines `entity` and no `user`; `http_request` is optional but present
+on all six. An attribute the class does not define makes the record invalid for
+that class, so every event is filtered against a per-class set in
+`mapping/okta.py`.
 
 ### 3.3 Mapping is data, not code
 
@@ -302,10 +329,20 @@ lives in `src/ocsf_connector/mapping/okta_ocsf.yaml` as a versioned table keyed 
 
 Rules:
 
-- An **unknown `eventType` must never crash or be dropped.** It falls back to a
-  generic class with the full source event in `unmapped`, and increments an
+- An **unknown `eventType` must never crash or be dropped.** It falls back to
+  **Base Event** — `class_uid` 0, `category_uid` 0, `activity_id` 0 Unknown —
+  with the full source event in `unmapped`, and increments an
   `unmapped_event_type` counter labeled by the event type. That counter is the
-  early-warning signal for source-side drift.
+  early-warning signal for source-side drift, so it counts every occurrence, not
+  just the first. Base Event rather than a nearby IAM class because 1.3.0's IAM
+  category has no generic member, and guessing a class is how a connector
+  quietly mislabels security data.
+- **`published` is an ISO 8601 string; OCSF `time` is epoch milliseconds.** A
+  timestamp that will not parse yields `0` rather than an exception, and the
+  original string is kept in `metadata.original_time` either way.
+- The table is seeded from the event types Okta documents. It is not exhaustive
+  and is not meant to be — Okta adds types continuously, which is the whole
+  reason the fallback and the counter exist.
 - Every source field that is not mapped goes into `unmapped`. Populating
   `unmapped` honestly is a feature; silently discarding source fields is the
   signature of a toy connector.
@@ -521,6 +558,8 @@ Emitted as OpenTelemetry metrics:
 - [Okta — System Log API](https://developer.okta.com/docs/api/openapi/okta-management/management/tags/systemlog) — renders client-side; read from its source, below
 - [Okta — Management OpenAPI spec, `dist/2026.08.4/management-minimal.yaml`](https://github.com/okta/okta-management-openapi-spec/blob/master/dist/2026.08.4/management-minimal.yaml) — `listLogEvents`: `limit` 0–1000 default 100, `sortOrder` default `ASCENDING`, `sortOrder` wording (checked 2026-09-11)
 - [OCSF schema browser](https://schema.ocsf.io/) — v1.9.0, IAM category 3, class UIDs
+- [OCSF 1.3.0 schema API](https://schema.ocsf.io/api/1.3.0/classes) — the emitted version: six IAM classes, per-class required attributes and constraints, `activity_id`/`status_id`/`severity_id` enums, `cloud` and `osint` as profile attributes, Base Event as `class_uid` 0 (checked 2026-09-12)
+- [OCSF schema repository, tag v1.3.0](https://github.com/ocsf/ocsf-schema/tree/v1.3.0) — `events/iam/*.json`, `events/base_event.json`, `dictionary.json` (`type_uid` formula) (checked 2026-09-12)
 - [OCSF — Authentication (3002)](https://schema.ocsf.io/1.9.0/classes/authentication) — activity IDs, required attributes, `type_uid` formula
 - [AWS — Collecting data from custom sources in Security Lake](https://docs.aws.amazon.com/security-lake/latest/userguide/custom-sources.html) — OCSF 1.3 ceiling, Parquet/zstd, partitioning, one class per object
 
