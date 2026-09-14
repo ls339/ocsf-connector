@@ -510,6 +510,28 @@ an opaque cursor and must be escaped or hashed before it becomes a path segment.
 | `last_published` | most recent `published` seen. **Observability only.** Never used to resume. |
 | `mapping_version` | mapping table revision that produced the last committed batch. Written with the cursor; read on startup to detect that the table moved under a resumed stream. |
 
+**The durable implementation.** `state/sqlite.py` is the one that has to earn
+this: one file, two tables, and `commit()` as a single `BEGIN IMMEDIATE … COMMIT`
+so the cursor row and the seen rows land together or not at all. A `committed`
+column, not `cursor IS NULL`, separates a finished range from a stream that never
+started.
+
+- **WAL plus `synchronous=FULL`.** A commit that has not reached the disk is a
+  lie about what the sink acknowledged, and the entire guarantee is that the
+  commit *follows* the ack. It costs one fsync per flushed batch, not per event.
+- **One transaction at a time.** `sqlite3.threadsafety` is 3, so the connection
+  may be shared across threads, but a connection holds one transaction: two
+  overlapping `BEGIN IMMEDIATE` calls raise "cannot start a transaction within a
+  transaction". Every transaction therefore runs under an `asyncio.Lock`.
+- **Wall clock, not monotonic.** The in-memory store defaults to
+  `time.monotonic`, which is correct when state dies with the process. A TTL that
+  outlives the process cannot use it: monotonic clocks restart when the process
+  does.
+
+The commit-order suite (§5.4) runs against both stores. In the durable run a
+restart closes the connection and reopens the file — which is the difference
+between asserting atomicity and demonstrating it.
+
 ### 5.4 The tests that matter
 
 `tests/test_commit_order.py` kills the runner in the ack→commit gap, restarts it

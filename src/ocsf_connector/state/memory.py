@@ -89,7 +89,9 @@ class InMemoryStateStore:
         row = self._streams.get(stream)
         return row is not None and row.committed
 
-    def purge_expired(self) -> int:
+    async def purge_expired(self) -> int:
+        """Async to match the durable store, whose purge is a write that has to
+        take the same lock as every other transaction."""
         now = self.clock()
         stale = [uid for uid, expiry in self._seen.items() if expiry <= now]
         for uid in stale:

@@ -12,7 +12,7 @@ from typing import Any
 
 from ocsf_connector.mapping.base import OcsfEvent
 from ocsf_connector.sources.base import Cursor, Page
-from ocsf_connector.state.memory import InMemoryStateStore
+from ocsf_connector.state.store import StateStore
 
 BASE_TIME_MS = 1_756_900_000_000
 
@@ -129,7 +129,7 @@ class CrashOnCommit:
     """Wraps a store and dies on the Nth commit, before it records anything --
     i.e. in the gap between the sink ack and the cursor commit."""
 
-    inner: InMemoryStateStore
+    inner: StateStore
     crash_on: int
     commits: int = 0
 
