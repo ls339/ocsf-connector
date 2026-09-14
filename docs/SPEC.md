@@ -133,25 +133,40 @@ connector does not use it as a termination rule in either mode.
 
 ### 2.3 Rate limits
 
-**[verified]** The `/api/v1/logs` bucket is **120 requests/minute org-wide**, and
-a **single API token is capped at 60 requests/minute** against that endpoint.
-Exceeding it returns HTTP 429. `X-Rate-Limit-Reset` carries the UTC epoch second
-at which the limit resets; counters reset roughly every 60s but are not aligned
-to wall-clock minutes. **[verified]** Individual queries time out at 30 seconds.
+**[verified]** A client gets **half a bucket by default**: "each API token or
+OAuth 2.0 app can use up to 50% of a bucket's total rate limit." Okta illustrates
+the rule with this very endpoint — "if your org-wide limit for the `/api/v1/logs`
+bucket is 120 requests per minute, a single API token can only make 60 requests
+per minute."
+
+**That 120 is Okta's example, not a published constant**, and an earlier draft of
+this section quoted it as though it were one. Okta prints no per-endpoint table:
+a bucket's quota "can vary based on … the type of service subscription …, the
+HTTP method used, the number of licenses purchased, and any applicable add-ons",
+and on whether the org is an Integrator Free Plan org. The authoritative number
+for a given org is in the Admin Console under **Reports → Rate Limits**.
+
+Exceeding a quota returns HTTP 429. `X-Rate-Limit-Reset` carries the UTC epoch
+second at which the limit resets; counters reset roughly every 60s but are not
+aligned to wall-clock minutes. **[verified]** Individual queries time out at 30
+seconds.
 
 Design consequences:
 
-- The binding constraint is the **per-token 60/min**, i.e. ~1 request/second
-  sustained. Budget for that, not for the 120 org limit.
+- **The connector must not hardcode a quota, and does not.** It budgets from the
+  headers on each response — `X-Rate-Limit-Remaining` and `X-Rate-Limit-Reset` —
+  which are the only figures true for the org it is actually pointed at. Size
+  capacity planning at roughly ~1 request/second and confirm against the
+  dashboard; a free-plan org and a licensed one need not agree.
 - On 429, sleep until `X-Rate-Limit-Reset` **plus jitter**, not a fixed backoff.
   Unjittered reset-time sleeps make every client in the org wake simultaneously.
 - Proactively throttle on `X-Rate-Limit-Remaining` rather than waiting for the
   429. The connector shares the org budget with whatever else the customer runs.
-- **[verified]** "By default, all new apps consume 50% of every API's rate
-  limits", adjustable per app in the Admin Console. Half of the 120/min
-  `/api/v1/logs` bucket is 60/min — the same order as the per-token cap, so the
-  ~1 request/second budget stands. It is worth knowing anyway: an admin can move
-  that slider down, and the rest of the bucket is shared with everything else.
+- **[verified]** The 50% share is adjustable, not fixed: "By default, all new
+  apps consume 50% of every API's rate limits", movable per app in the Admin
+  Console or through the principal rate limits API. An admin can lower it, and
+  whatever remains of the bucket is shared with everything else the customer
+  runs — which is the argument for throttling early rather than at the 429.
 - **[verified]** `limit` defaults to 100 and accepts an "Integer between 0 and
   1000". At ~1 request/second, page size is the throughput ceiling: about 6,000
   events/minute at the default, 60,000 at 1000. Okta's sample `next` link keeps
@@ -548,7 +563,9 @@ Emitted as OpenTelemetry metrics:
 ## 8. Sources verified 2026-09-02
 
 - [Okta — System Log query](https://developer.okta.com/docs/reference/system-log-query/) — polling vs bounded, ordering, `next` links, `after`, delayed events; termination, retention, the export example (checked again 2026-09-11)
-- [Okta — Rate limits](https://developer.okta.com/docs/reference/rate-limits/) — `/api/v1/logs` 120/min org, 60/min per token
+- [Okta — Rate limits overview](https://developer.okta.com/docs/reference/rate-limits/) — buckets and scopes; a quota varies by subscription type, HTTP method, licenses, add-ons, and Integrator Free Plan status (re-checked 2026-09-14: the per-endpoint numbers this document once cited as fact are no longer published here, if they ever were)
+- [Okta — Token and OAuth 2.0 app rate limits](https://developer.okta.com/docs/reference/rl2-token-oauth/) — a token or app gets 50% of a bucket by default, illustrated with `/api/v1/logs` at 120/min org and 60/min per token (checked 2026-09-14)
+- [Okta — Monitor and troubleshoot rate limits](https://developer.okta.com/docs/reference/rl2-monitor/) — the Rate Limits dashboard, Reports → Rate Limits, where a given org's real bucket quota is visible (checked 2026-09-14)
 - [Okta — Implement OAuth for Okta with a service app](https://developer.okta.com/docs/guides/implement-oauth-for-okta-serviceapp/main/) — client credentials + `private_key_jwt` only; token endpoint, assertion claims, `token_type` Bearer / `expires_in` 3600 (checked 2026-09-11)
 - [Okta — Build a JWT for client authentication](https://developer.okta.com/docs/guides/build-self-signed-jwt/java/main/) — assertion claim table: `aud`, `exp` ≤ 1h, `iss`, `sub`, optional single-use `jti` (checked 2026-09-11)
 - [Okta — Configure OAuth 2.0 Demonstrating Proof-of-Possession (Okta resource server)](https://developer.okta.com/docs/guides/dpop/oktaresourceserver/main/) — proof claims, nonce handshake, `ath`, `Authorization: DPoP` (checked 2026-09-11)
