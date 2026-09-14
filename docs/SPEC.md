@@ -417,6 +417,25 @@ sink therefore:
 3. Registers **one Security Lake custom source per OCSF class** — e.g.
    `okta_authentication`, `okta_account_change`. Well within the 50-source cap.
 
+**The Parquet schema is half declared, half inferred, and that is a decision.**
+It becomes the Glue table that Athena queries bind to, so changing it later means
+rewriting published objects.
+
+- The **base-event columns** every OCSF record carries — `time`, `class_uid`,
+  `category_uid`, `activity_id`, `type_uid`, `severity_id`, `status_id`,
+  `status`, `status_detail`, `message`, `metadata` — are declared with fixed
+  Arrow types in `sinks/security_lake.py`. Identical in every object, whatever
+  the class, so the table's core cannot drift.
+- **Class-specific objects** (`user`, `entity`, `service`, `group`,
+  `privileges`, `session`, `is_mfa`, `src_endpoint`, `http_request`) are inferred
+  per batch. The six IAM classes do not agree on which of these exist (§3.2), and
+  pinning all of them by hand would make every newly mapped field a schema edit.
+- **`unmapped` is a JSON string.** Its shape is by definition whatever the vendor
+  sent, which is not something a column type can describe.
+- A column that is null for every row in an object is **dropped**, because an
+  inferred all-null column takes Arrow's `null` type and reaches the Glue table
+  as something no query can use.
+
 **`accountId` for a non-AWS source.** Okta events do not belong to an AWS
 account. **[verified]** AWS recommends a string such as `external` or
 `external_{externalAccountId}` for exactly this case. v1 uses

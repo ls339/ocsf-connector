@@ -49,3 +49,10 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
+
+# pyarrow ships no py.typed marker and has no stubs on PyPI worth pinning. The
+# exemption is for the import only: everything this project writes on top of it
+# is still checked strictly.
+[[tool.mypy.overrides]]
+module = ["pyarrow.*"]
+ignore_missing_imports = true
