@@ -138,7 +138,12 @@ class OktaOcsfMapper:
     def map(self, record: dict[str, Any]) -> OcsfEvent:
         """Normalize one Okta record. Total: every path returns an event."""
         source = record if isinstance(record, dict) else {}
-        event_type = str(source.get("eventType") or "")
+        reader = _Reader(source)
+        # Read through the reader so the mapping key counts as consumed. It is
+        # reflected in class_uid and activity_id and carried verbatim as
+        # metadata.event_code, so echoing it into unmapped as well is noise in
+        # every object (§2.5).
+        event_type = str(reader.get("eventType") or "")
 
         entry = self._events.get(event_type)
         if entry is None:
@@ -151,8 +156,7 @@ class OktaOcsfMapper:
 
         class_uid = entry["class_uid"]
         activity_id = entry["activity_id"]
-        reader = _Reader(source)
-        body = self._body(reader, class_uid, activity_id)
+        body = self._body(reader, class_uid, activity_id, event_type)
         body["unmapped"] = _leftovers(source, reader.consumed)
 
         return OcsfEvent(
@@ -162,7 +166,9 @@ class OktaOcsfMapper:
             body=body,
         )
 
-    def _body(self, reader: _Reader, class_uid: int, activity_id: int) -> dict[str, Any]:
+    def _body(
+        self, reader: _Reader, class_uid: int, activity_id: int, event_code: str
+    ) -> dict[str, Any]:
         published = reader.get("published")
         outcome_result = reader.get("outcome", "result")
         allowed = BASE_ATTRIBUTES | CLASS_ATTRIBUTES.get(class_uid, frozenset())
@@ -179,6 +185,11 @@ class OktaOcsfMapper:
                 "version": self.ocsf_version,
                 "uid": str(reader.get("uuid") or ""),
                 "original_time": str(published) if published is not None else "",
+                # OCSF 1.3.0: "The Event ID or Code that the product uses to
+                # describe the event." An unknown eventType degrades to Base
+                # Event, which has no field naming it -- this is where it
+                # survives, as a column rather than buried in unmapped (§3.3).
+                "event_code": event_code,
                 "product": {"name": "Okta System Log", "vendor_name": "Okta"},
                 # The mapping revision travels with every record, so any row can
                 # be traced to the rules that produced it (§3.1).

@@ -84,6 +84,7 @@ SPINE = pa.schema(
                     pa.field("version", pa.string()),
                     pa.field("uid", pa.string()),
                     pa.field("original_time", pa.string()),
+                    pa.field("event_code", pa.string()),
                     pa.field(
                         "product",
                         pa.struct(

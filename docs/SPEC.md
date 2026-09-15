@@ -235,12 +235,33 @@ text, and like that one it reads no parameter.
 
 ### 2.5 Event shape
 
-Fields consumed from each log event: `uuid`, `published`, `eventType`,
-`severity`, `displayMessage`, `actor`, `client`, `outcome`,
-`authenticationContext`, `securityContext`, `target`, `transaction`,
-`debugContext`.
+An earlier version of this list named fields the mapping never touched and
+omitted three the vendor actually sends. What follows is what the code does,
+in three groups, because the distinction is the thing that keeps `unmapped`
+honest.
 
-`uuid` is the dedup key. `eventType` is the mapping key.
+**Fully consumed.** `uuid` — the dedup key, and `metadata.uid`. `published` —
+`time` (epoch ms) and `metadata.original_time` (verbatim). `eventType` — the
+mapping key, so it picks `class_uid` and `activity_id`, and rides along as
+`metadata.event_code`. `severity`, `displayMessage`, `outcome`.
+
+**Partially consumed; the remainder is preserved.** `actor` (`id`,
+`displayName`, `alternateId` are mapped, `type` and `detailEntry` are not);
+`client` (`ipAddress`, `geographicalContext`, `userAgent.rawUserAgent` are
+mapped, `zone`, `device`, `id` and the parsed user-agent fields are not);
+`authenticationContext` (the session id and the MFA signals are mapped, the rest
+is not).
+
+**Not consumed at all.** `target` — read to build the class-specific object but
+deliberately never *marked* consumed, because an event can name several targets
+and a class has room for one (§3.3) — plus `transaction`, `debugContext`,
+`securityContext`, `request` (the proxy `ipChain`), `version`, and
+`legacyEventType`.
+
+Everything in the last two groups lands under `unmapped`; nothing is dropped.
+"Consumed" means marked consumed by the reader as it maps, which is what lets
+`unmapped` be computed rather than maintained as a hand-written exclusion list
+that would drift the first time a field moved.
 
 ### 2.6 Retention
 
@@ -369,6 +390,7 @@ Worked example — `user.session.start` → Authentication (3002), `activity_id`
 |---|---|
 | `published` | `time` (epoch **milliseconds**, UTC) |
 | `uuid` | `metadata.uid` |
+| `eventType` | the class and activity, and `metadata.event_code` |
 | `published` | `metadata.original_time` (string, as received) |
 | `outcome.result` SUCCESS / FAILURE | `status_id` 1 / 2 |
 | `outcome.reason` | `status_detail` |

@@ -19,6 +19,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from ocsf_connector.mapping.base import OcsfEvent
+from ocsf_connector.mapping.okta import OktaOcsfMapper
 from ocsf_connector.sinks.objects import LocalObjectStore
 from ocsf_connector.sinks.security_lake import SPINE, SecurityLakeSink
 
@@ -186,6 +187,41 @@ async def test_the_declared_spine_is_identical_across_objects(tmp_path: Path) ->
         schema = pq.read_schema(BytesIO(store.read(key)))
         for spine_field in SPINE:
             assert schema.field(spine_field.name).type == spine_field.type, spine_field.name
+
+
+async def test_the_spine_declares_every_metadata_field_the_mapper_emits() -> None:
+    """pyarrow drops struct keys the declared type does not name -- silently, no
+    error, no warning. So a metadata field added to the mapper and forgotten here
+    would vanish between mapping and Parquet, which is precisely the silent
+    discarding this connector refuses (§3.3). This is the test that notices."""
+    event = OktaOcsfMapper().map(
+        {"uuid": "a1", "published": "2026-09-05T00:00:01Z", "eventType": "user.session.start"}
+    )
+
+    declared = {field.name for field in SPINE.field("metadata").type}
+
+    assert set(event.body["metadata"]) <= declared, (
+        f"mapper emits metadata the spine drops: {set(event.body['metadata']) - declared}"
+    )
+
+
+async def test_the_vendor_event_code_reaches_parquet(tmp_path: Path) -> None:
+    sink = make_sink(tmp_path)
+    mapper = OktaOcsfMapper()
+    await sink.write(
+        [
+            mapper.map(
+                {"uuid": "a1", "published": "2026-09-05T00:00:01Z", "eventType": "nope.not.known"}
+            )
+        ]
+    )
+
+    await sink.flush(BATCH)
+
+    store = sink.store
+    assert isinstance(store, LocalObjectStore)
+    metadata = table_at(sink, store.stored_keys()[0]).column("metadata").to_pylist()[0]
+    assert metadata["event_code"] == "nope.not.known"
 
 
 async def test_unmapped_travels_as_json(tmp_path: Path) -> None:

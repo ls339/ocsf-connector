@@ -83,6 +83,7 @@ def test_a_session_start_maps_to_the_spec_worked_example(mapper: OktaOcsfMapper)
     assert body["metadata"]["version"] == "1.3.0"
     assert body["metadata"]["uid"] == event.uid
     assert body["metadata"]["original_time"] == "2026-09-05T00:00:01.000Z"
+    assert body["metadata"]["event_code"] == "user.session.start"
     assert body["metadata"]["labels"] == [f"okta-ocsf-mapping:{mapper.mapping_version}"]
     assert body["user"] == {
         "uid": "00usynthetic00000001",
@@ -126,7 +127,10 @@ def test_an_unknown_event_type_degrades_and_counts() -> None:
     assert event.body["category_uid"] == 0
     assert event.body["activity_id"] == 0
     assert event.body["type_uid"] == 0
-    assert event.body["unmapped"]["eventType"] == "user.mysterious.new_thing"
+    assert event.body["metadata"]["event_code"] == "user.mysterious.new_thing", (
+        "Base Event has no field naming the vendor's event type; this is where it lives"
+    )
+    assert "eventType" not in event.body["unmapped"], "and it is not duplicated there too"
     assert mapper.unmapped_event_types["user.mysterious.new_thing"] == 2
     assert seen == ["user.mysterious.new_thing"] * 2
 
