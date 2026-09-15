@@ -24,6 +24,7 @@ import httpx
 
 from ocsf_connector.sources.base import Cursor, Page
 from ocsf_connector.sources.okta.auth import Authorizer
+from ocsf_connector.telemetry.base import Metrics, NullMetrics
 
 LOGS_PATH = "/api/v1/logs"
 
@@ -82,6 +83,7 @@ class OktaSource:
     clock: Callable[[], float] = time.time
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
     jitter: Callable[[], float] = random.random
+    metrics: Metrics = field(default_factory=NullMetrics)
     _remaining: int | None = field(default=None, init=False)
     _reset_at: float | None = field(default=None, init=False)
 
@@ -169,6 +171,9 @@ class OktaSource:
         reset = _int_header(response, "X-Rate-Limit-Reset")
         if remaining is not None and reset is not None:
             self._remaining, self._reset_at = remaining, float(reset)
+            # Reported from the response that carried it, rather than re-read
+            # from headers elsewhere: this is the only place that sees them.
+            self.metrics.record_rate_limit_remaining(remaining)
 
     async def _respect_budget(self) -> None:
         # Wait before the 429, not after it: the connector shares the org's budget

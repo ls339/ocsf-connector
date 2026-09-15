@@ -11,6 +11,7 @@ See docs/SPEC.md §5 and §6.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -18,6 +19,7 @@ from ocsf_connector.mapping.base import Mapper, OcsfEvent
 from ocsf_connector.sinks.base import Sink
 from ocsf_connector.sources.base import Cursor, Source
 from ocsf_connector.state.store import StateStore
+from ocsf_connector.telemetry.base import Metrics, NullMetrics
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +43,8 @@ async def run(
     start: Callable[[], Awaitable[Cursor]],
     on_idle: Callable[[], Awaitable[None]] | None = None,
     max_pages: int | None = None,
+    metrics: Metrics | None = None,
+    clock: Callable[[], float] = time.time,
 ) -> RunStats:
     """Drive one stream until it is exhausted or ``max_pages`` is reached.
 
@@ -53,6 +57,10 @@ async def run(
     re-requests. ``max_pages`` bounds an otherwise infinite tail; it exists for
     tests and for graceful shutdown, not as a throttle.
     """
+    # Silence by default: the connector must not need an observability stack to
+    # run (docs/SPEC.md §7).
+    telemetry = metrics if metrics is not None else NullMetrics()
+
     cursor = await store.get_cursor(stream)
     if cursor is None:
         cursor = await start()
@@ -63,12 +71,17 @@ async def run(
     # shorter batch leaves out are picked up by the batch that starts where it
     # ended. See docs/SPEC.md §5.2.
     batch_key = cursor
+    batch_opened_at = clock()
     pending: list[str] = []
     pages = mapped = written = duplicates = commits = 0
     exhausted = False
 
     while max_pages is None or pages < max_pages:
-        page = await source.fetch(cursor)
+        try:
+            page = await source.fetch(cursor)
+        except BaseException:
+            telemetry.count_error(stage="source", stream=stream)
+            raise
         pages += 1
 
         # Map before dedup, deliberately. Mapping every record -- including one
@@ -88,24 +101,37 @@ async def run(
         duplicates += len(events) - len(fresh)
 
         if events:
-            await store.record_published(stream, max(event.time_ms for event in events))
+            newest = max(event.time_ms for event in events)
+            await store.record_published(stream, newest)
+            # The one use `published` is safe for: how far behind we are, never
+            # where to resume from (§2.1).
+            telemetry.record_ingest_lag(clock() - newest / 1000, stream=stream)
 
         await sink.write(fresh)
         pending.extend(event.uid for event in fresh)
         written += len(fresh)
+        telemetry.count_events(len(fresh), stream=stream)
 
         next_cursor = page.next_cursor
         exhausted = next_cursor is None
 
         if exhausted or sink.should_flush:
-            await sink.flush(batch_key)
+            try:
+                await sink.flush(batch_key)
+            except BaseException:
+                telemetry.count_error(stage="sink", stream=stream)
+                raise
             # --- the gap. A crash here replays the batch above; the flush is
             # idempotent on batch_key, so the replay overwrites it. Committing
-            # before this line instead would lose the batch outright.
+            # before this line instead would lose the batch outright. Nothing
+            # else belongs between these two lines -- telemetry included, which
+            # is why the lag is recorded after the commit and not around it.
             await store.commit(stream, next_cursor, pending, mapper.mapping_version)
             commits += 1
+            telemetry.record_commit_lag(clock() - batch_opened_at, stream=stream)
             pending = []
             batch_key = next_cursor if next_cursor is not None else batch_key
+            batch_opened_at = clock()
 
         if exhausted:
             break

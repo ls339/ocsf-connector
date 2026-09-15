@@ -592,12 +592,33 @@ Emitted as OpenTelemetry metrics:
 | Metric | Why it exists |
 |---|---|
 | `ingest_lag_seconds` | `now − published`. The headline SLI. Uses `published` for the one purpose it is safe for. |
-| `events_per_second` | throughput |
-| `error_rate` by class | source vs. map vs. sink failures, separated |
+| `events_total{stream}` | throughput — see below |
+| `errors_total{stage,stream}` | source vs. map vs. sink failures, separated |
 | `unmapped_event_type_total{event_type}` | source schema drift early warning |
 | `rate_limit_remaining` | headroom against the shared org budget |
 | `cursor_commit_lag_seconds` | how much work is at risk of replay right now |
 | `parquet_objects_written{class_uid}` | sink health per Security Lake source |
+
+**Counters, not rates.** SPEC once named two of these as rates. A rate computed
+in-process is wrong the moment there is more than one instance, and wrong again
+across a restart, because the divisor is whatever window that process happened to
+see. The connector emits monotonic counters and lets whatever scrapes them divide
+over the window the viewer asked for. Lags are histograms for the same reason: a
+p99 across a fleet cannot be rebuilt from the last value each instance held.
+
+**Where each signal comes from.** The source reports rate-limit headroom, being
+the only thing that sees those headers (§2.3); the mapper's existing drift hook
+feeds `unmapped_event_type_total` (§3.3); the sink counts objects per class,
+because Security Lake registers one source per class and a single number would
+hide a dead one (§4.1); the runner reports throughput, both lags, and errors by
+stage. Only `telemetry/` imports OpenTelemetry, and the default implementation is
+silent — this connector must never require an observability stack in order to run.
+
+**No telemetry call may sit between the sink's acknowledgement and the cursor
+commit.** That gap is the delivery guarantee (§5), and a metrics backend having a
+bad day must not be able to strand an acknowledged batch behind an uncommitted
+cursor. Commit lag is recorded *after* the commit returns, and the test for it
+makes the metrics call raise, then asserts the cursor committed anyway.
 
 ---
 

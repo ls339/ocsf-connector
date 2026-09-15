@@ -37,6 +37,7 @@ import pyarrow.parquet as pq
 
 from ocsf_connector.mapping.base import OcsfEvent
 from ocsf_connector.sinks.objects import ObjectStore
+from ocsf_connector.telemetry.base import Metrics, NullMetrics
 
 MAX_BYTES = 256 * 1024 * 1024
 """Security Lake's row-group ceiling, and this sink's buffer ceiling (§4)."""
@@ -115,6 +116,7 @@ class SecurityLakeSink:
     max_bytes: int = MAX_BYTES
     max_seconds: float = MAX_SECONDS
     clock: Callable[[], float] = time.time
+    metrics: Metrics = field(default_factory=NullMetrics)
     _buffer: list[OcsfEvent] = field(default_factory=list, init=False)
     _buffered_bytes: int = field(default=0, init=False)
     _opened_at: float | None = field(default=None, init=False)
@@ -150,6 +152,9 @@ class SecurityLakeSink:
         for (class_uid, event_day), events in _bucket(self._buffer).items():
             body = _parquet_bytes(events)
             await self.store.put(self._key(class_uid, event_day, digest), body)
+            # Per class, because Security Lake registers one custom source per
+            # class (§4.1) -- a single number would hide a dead source.
+            self.metrics.count_object_written(class_uid=class_uid)
 
         self._buffer.clear()
         self._buffered_bytes = 0
