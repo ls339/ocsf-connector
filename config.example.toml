@@ -1,0 +1,65 @@
+# ocsf-connector configuration.
+#
+# Copy to config.toml and edit. Any value here can be overridden by an
+# environment variable -- see ENV_OVERRIDES in src/ocsf_connector/config.py for
+# the full list, which is deliberately explicit rather than a naming convention.
+#
+# No secret belongs in this file. The private key is named by path, never pasted.
+
+# Which stream's cursor to resume from. Leave unset: tail and backfill default to
+# different names, and they must not share one -- the state store is keyed by
+# stream, so a backfill sharing tail's name would overwrite tail's position.
+# stream = "okta-tail"
+
+[okta]
+org_url = "https://your-org.okta.com"
+client_id = "0oa..."
+kid = "the-key-id-registered-on-the-app"
+
+# Path to the PEM private key for client authentication. Mount it, do not paste
+# it. AWS Secrets Manager is a later option and changes only this line.
+private_key_file = "/run/secrets/okta_client_key.pem"
+
+# Set ONLY if the app has "Require DPoP" enabled. Okta requires this to be a
+# different key pair from the one above.
+# dpop_key_file = "/run/secrets/okta_dpop_key.pem"
+
+# Where tail opens the stream the first time, and nowhere else does this come
+# from. It is required and has no default on purpose: computing it at startup
+# would break replay after a crash before the first commit (SPEC 5.2).
+since = "2026-09-01T00:00:00Z"
+
+# Page size. Okta's ceiling is 1000, and at roughly one request per second this
+# is the throughput ceiling. It is fixed for the life of a stream: a committed
+# stream resumes from its stored cursor, which carries the original value.
+limit = 1000
+
+# How long tail sleeps when Okta says there is nothing new yet.
+poll_seconds = 10.0
+
+[sink]
+# "local" writes Parquet to a directory. S3 delivery is a separate piece of work.
+kind = "local"
+directory = "out"
+
+# Prefixes the per-class custom source names: okta_authentication,
+# okta_account_change, and so on -- Security Lake registers one source per class.
+source_name = "okta"
+
+region = "us-east-1"
+
+# Okta events belong to no AWS account; AWS recommends this form for that case.
+account_id = "external_your-okta-org-id"
+
+[state]
+# The cursor and the dedup set. Losing this file means re-ingesting from `since`.
+database = "state/ocsf-connector.db"
+
+# How long a delivered event id is remembered, to absorb duplicates Okta itself
+# delivers. This does not cover crash replay -- the idempotent object write does.
+ttl_hours = 24.0
+
+[telemetry]
+# Off by default: this connector must never require an observability stack to
+# run. When true, metrics are emitted through OpenTelemetry.
+enabled = false

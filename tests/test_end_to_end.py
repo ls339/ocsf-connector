@@ -295,6 +295,53 @@ async def test_a_sink_failure_leaves_the_cursor_where_it_was(
     assert not store.has_committed(STREAM)
 
 
+async def test_tail_and_backfill_produce_the_same_ocsf_for_one_event(
+    client: httpx.AsyncClient, respx_mock: respx.MockRouter
+) -> None:
+    """docs/SPEC.md §6 asserts this, and until now nothing checked it.
+
+    The modes share the mapper and the sink path; only the opening cursor and
+    the termination condition differ. It is true by construction -- the runner
+    cannot tell which mode it is in -- which is exactly the kind of claim that
+    stays true right up until someone gives one mode its own code path.
+    """
+    page = [record("a1", second=1)]
+    respx_mock.get(url__startswith=LOGS).mock(
+        side_effect=okta(
+            {
+                TAIL_OPENING: (page, next_url("p2")),
+                BACKFILL_OPENING: (page, None),
+            }
+        )
+    )
+
+    tailed, backfilled = RecordingSink(), RecordingSink()
+    tail_source = make_source(client)
+    await run(
+        source=tail_source,
+        mapper=OktaOcsfMapper(),
+        sink=tailed,
+        store=InMemoryStateStore(),
+        stream="okta-tail",
+        start=lambda: tail_source.start_tail(SINCE),
+        max_pages=1,
+    )
+    backfill_source = make_source(client)
+    await run(
+        source=backfill_source,
+        mapper=OktaOcsfMapper(),
+        sink=backfilled,
+        store=InMemoryStateStore(),
+        stream="okta-backfill",
+        start=lambda: backfill_source.start_backfill(SINCE, UNTIL),
+    )
+
+    (from_tail,) = next(iter(tailed.objects.values()))
+    (from_backfill,) = next(iter(backfilled.objects.values()))
+    assert from_tail.body == from_backfill.body
+    assert (from_tail.uid, from_tail.time_ms) == (from_backfill.uid, from_backfill.time_ms)
+
+
 async def test_what_lands_in_the_sink_is_ocsf(
     client: httpx.AsyncClient, respx_mock: respx.MockRouter
 ) -> None:

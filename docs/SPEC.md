@@ -603,7 +603,21 @@ mode; only the fetch loop and termination condition differ.
 
 Both modes write through the identical mapping and sink path. If backfill and
 tail ever produce different OCSF output for the same source event, that is a bug,
-and there is a test asserting they do not.
+and `tests/test_end_to_end.py` asserts they do not.
+
+**They must not share a stream name.** The state store is keyed by stream (§5.3),
+so a backfill running under tail's name would overwrite tail's resume position
+with the end of a closed range. The entry points default to `okta-tail` and
+`okta-backfill`, overridable in configuration. The dedup seen-set is deliberately
+*not* per stream, which is what keeps the overlap harmless where a backfill range
+meets the tail (§5.2).
+
+**The command line enforces what the runner cannot.** `ocsf-connector tail` takes
+no time bounds at all, because the opening `since` comes from configuration and a
+flag invites `--since $(date)` — the moving opening cursor §5.2 exists to prevent.
+`ocsf-connector backfill` requires both `--since` and `--until`, since a bounded
+query is meaningless without them. A parser refuses those mistakes; a runtime
+check only reports them afterwards.
 
 ---
 
