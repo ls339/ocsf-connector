@@ -17,6 +17,11 @@ htmlcov/
 *.jwk
 secrets/
 
+# Real configuration. config.example.toml is the tracked template; config.toml
+# names a live org and client id, which are tenant identifiers this public repo
+# must not carry (CLAUDE.md invariant 5).
+config.toml
+
 # Local run state
 state/*.db
 out/
