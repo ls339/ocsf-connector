@@ -206,9 +206,11 @@ JWT header, with `kid` naming the registered key. The response is `token_type`
 `Bearer`, `expires_in` 3600, and the lifetime is "fixed at one hour."
 
 **[verified] DPoP changes the shape of every request.** A service app can require
-Demonstrating Proof-of-Possession. Okta's own DPoP walkthrough has the reader
-*turn it off* on a newly created API Services app, which is evidence that it
-defaults on — no page states the default outright. With it on:
+Demonstrating Proof-of-Possession, and **it is on by default**. This was an
+inference from Okta's own walkthrough telling the reader to *turn it off* on a
+newly created API Services app; on 2026-09-16 a freshly created Integrator Free
+Plan app required it without anyone enabling it, which settles the question. No
+Okta page states the default outright. With it on:
 
 - The DPoP key pair is **separate** from the client-authentication key pair.
 - The token POST carries a `DPoP` proof: header `typ` `dpop+jwt`, an asymmetric

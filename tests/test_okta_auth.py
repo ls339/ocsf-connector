@@ -279,6 +279,27 @@ async def test_dpop_answers_the_nonce_challenge_then_reuses_the_nonce(
     assert proof_from(route.calls.last.request)[1]["nonce"] == NONCE
 
 
+async def test_the_nonce_retry_signs_its_own_assertion(
+    client: httpx.AsyncClient, clock: FakeClock, respx_mock: respx.MockRouter
+) -> None:
+    """The nonce handshake makes two token requests, and an assertion carrying a
+    jti is single-use (docs/SPEC.md §2.4). Replaying the first one on the retry
+    earns "The client_assertion token has already been used." -- which is exactly
+    what a real org returned on the first live run. Mocks were happy to accept
+    the replay; Okta was not.
+    """
+    route = respx_mock.post(TOKEN_URL).mock(side_effect=[nonce_challenge(), token_response("DPoP")])
+    auth = DpopAuth(credentials(client, clock), dpop_key=DPOP_KEY, clock=clock)
+
+    await auth.headers("GET", CURSOR)
+
+    assert route.call_count == 2
+    first, retry = (posted_form(call.request)["client_assertion"] for call in route.calls)
+    assert first != retry, "the retry replayed the first assertion"
+    identifiers = {decode_assertion(call.request)["jti"] for call in route.calls}
+    assert len(identifiers) == 2, "each attempt needs its own jti"
+
+
 async def test_a_dpop_proof_binds_the_request_method_url_and_token(
     client: httpx.AsyncClient, clock: FakeClock, respx_mock: respx.MockRouter
 ) -> None:

@@ -124,15 +124,19 @@ class OktaClientCredentials:
             return minted
 
     async def _mint(self, proof: Callable[[str | None], str] | None) -> AccessToken:
-        form = {
-            "grant_type": "client_credentials",
-            "scope": " ".join(self.scopes),
-            "client_assertion_type": ASSERTION_TYPE,
-            "client_assertion": self._assertion(),
-        }
         headers = {"Accept": "application/json"}
         nonce: str | None = None
         for attempt in (1, 2):
+            # A fresh assertion per attempt, not per mint. The jti makes an
+            # assertion single-use (§2.4), and the DPoP nonce handshake sends two
+            # token requests -- replaying the first one earns "The
+            # client_assertion token has already been used." from a real org.
+            form = {
+                "grant_type": "client_credentials",
+                "scope": " ".join(self.scopes),
+                "client_assertion_type": ASSERTION_TYPE,
+                "client_assertion": self._assertion(),
+            }
             if proof is not None:
                 headers["DPoP"] = proof(nonce)
             response = await self.client.post(
