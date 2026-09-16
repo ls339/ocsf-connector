@@ -38,6 +38,7 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
+from jwt import PyJWTError
 
 from ocsf_connector.sources.okta.auth import (
     AuthError,
@@ -85,18 +86,30 @@ async def probe() -> int:
     dpop_file = os.environ.get("OKTA_DPOP_KEY_FILE")
 
     async with httpx.AsyncClient() as client:
-        credentials = OktaClientCredentials(
-            org_url=org_url,
-            client_id=os.environ["OKTA_CLIENT_ID"],
-            private_key=Path(os.environ["OKTA_PRIVATE_KEY_FILE"]).read_text(),
-            kid=os.environ["OKTA_KID"],
-            client=client,
-        )
-        auth = (
-            DpopAuth(credentials, dpop_key=Path(dpop_file).read_text())
-            if dpop_file
-            else BearerAuth(credentials)
-        )
+        # A key that cannot be read or cannot be parsed is a configuration
+        # mistake, not an answer about Okta -- so it exits 2 like the missing
+        # variables above, and says what happened instead of unwinding a
+        # traceback from inside the JWT library.
+        try:
+            credentials = OktaClientCredentials(
+                org_url=org_url,
+                client_id=os.environ["OKTA_CLIENT_ID"],
+                private_key=Path(os.environ["OKTA_PRIVATE_KEY_FILE"]).read_text(),
+                kid=os.environ["OKTA_KID"],
+                client=client,
+            )
+            auth = (
+                DpopAuth(credentials, dpop_key=Path(dpop_file).read_text())
+                if dpop_file
+                else BearerAuth(credentials)
+            )
+        except OSError as exc:
+            print(f"cannot read a key file: {exc}")
+            return 2
+        except (PyJWTError, ValueError) as exc:
+            print(f"a key file is not a usable private key: {exc}")
+            return 2
+
         source = OktaSource(
             org_url=org_url,
             client=client,
@@ -119,6 +132,11 @@ async def probe() -> int:
                 print("      If this says the app requires DPoP, that answers")
                 print("      question 2: set OKTA_DPOP_KEY_FILE and run again.")
             return 1
+        except PyJWTError as exc:
+            # Signing happens lazily, at the first token request, so a bad key
+            # surfaces here rather than at construction for the Bearer path.
+            print(f"\ncannot sign the client assertion: {exc}")
+            return 2
         except OktaApiError as exc:
             print(f"\nFAIL  request: {exc}")
             return 1
