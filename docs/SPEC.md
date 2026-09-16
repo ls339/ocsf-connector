@@ -86,6 +86,14 @@ be specified simultaneously," yet its sample `next` link carries both. A client
 that tidied a `next` URL to match the stated rule would send a request Okta never
 generated. Fixtures copy the documented shape, `since` included.
 
+**[verified] live, 2026-09-16.** A real `next` link carried `since` *and* `after`
+together, confirming that the documentation's "mutually exclusive" rule describes
+what a client may send rather than what Okta emits. It also ordered its query
+parameters differently from the opening query this connector builds
+(`since`, `limit`, `sortOrder`, `after`), and carried no empty `q=`. None of that
+matters to a connector that stores the URL verbatim, which is the point: every
+one of those details would be a bug in a connector that rebuilt it.
+
 **Reading `next`, and where a cursor may point.** The `next` cursor is the exact
 text between the angle brackets of the `rel="next"` link-value. A generic `Link`
 parser is not good enough — httpx's `Response.links`, for one, splits a URL that
@@ -93,9 +101,12 @@ contains `;`. Before any GET, the source checks one thing about a cursor: that i
 begins with the configured org's `https://…/api/v1/logs?`. That reads no
 parameter and derives no position; it keeps the bearer token on this org's logs
 endpoint if a state store ever hands back something else. It assumes Okta's
-`next` links use the host the request was sent to. The pages in §8 do not state
-that, and it is the first thing to confirm against a live org — custom domains
-especially. The DPoP proof's `htu` splits the same URL at the `?` (§2.4); those
+`next` links use the host the request was sent to, which the pages in §8 never
+state. **Confirmed against a live org on 2026-09-16**: an Integrator Free Plan
+org on the `okta.com` domain answered on the host it was asked on, the cursor
+passed the origin check, and the second page fetched. A **custom domain** is
+still unverified — free-plan orgs cannot have one — and remains the case where
+this assumption is most likely to break. The DPoP proof's `htu` splits the same URL at the `?` (§2.4); those
 two are the only reads of a cursor's text anywhere in the connector.
 
 **What a cursor is, precisely.** A cursor is *the URL to GET next*. The source
