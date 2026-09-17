@@ -19,9 +19,28 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from ocsf_connector.config import Config, load_config
+from ocsf_connector.runner.loop import RunStats
 from ocsf_connector.runner.modes import backfill, tail
 
 DEFAULT_CONFIG = Path("config.toml")
+
+
+def summarise(stats: RunStats) -> str:
+    """What the run actually did, in one line.
+
+    A successful run used to print nothing at all, which makes "fetched four
+    hundred events" and "authenticated against an empty org" look identical from
+    the outside. The runner already counts all of this; it was simply discarded.
+    """
+    parts = [
+        f"{stats.pages} pages",
+        f"{stats.written} events written",
+        f"{stats.duplicates_skipped} duplicates skipped",
+        f"{stats.commits} commits",
+    ]
+    if stats.exhausted:
+        parts.append("range complete")
+    return ", ".join(parts)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -75,10 +94,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"configuration error in {args.config}: {exc}", file=sys.stderr)
         return 2
 
-    if args.command == "tail":
-        asyncio.run(tail(config))
-    else:
-        asyncio.run(backfill(config, since=args.since, until=args.until))
+    # Status goes to stderr so stdout stays free for machine-readable output
+    # later, and so a shell redirect of results does not swallow the one line
+    # that says whether anything happened.
+    destination = f"{config.okta.org_url} -> {config.sink.directory}"
+    try:
+        if args.command == "tail":
+            print(f"tailing {destination} (Ctrl-C to stop)", file=sys.stderr)
+            stats = asyncio.run(tail(config))
+        else:
+            print(f"backfilling {args.since} .. {args.until} {destination}", file=sys.stderr)
+            stats = asyncio.run(backfill(config, since=args.since, until=args.until))
+    except KeyboardInterrupt:
+        # Tail never returns on its own, so this is its normal exit. The cursor
+        # is committed after every acknowledged batch, so stopping here loses
+        # nothing (§5).
+        print("interrupted", file=sys.stderr)
+        return 130
+
+    print(summarise(stats), file=sys.stderr)
     return 0
 
 

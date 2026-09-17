@@ -15,8 +15,10 @@ from pathlib import Path
 import httpx
 import pytest
 
-from ocsf_connector.cli import build_parser, main
+import ocsf_connector.cli as cli_module
+from ocsf_connector.cli import build_parser, main, summarise
 from ocsf_connector.config import load_config
+from ocsf_connector.runner.loop import RunStats
 from ocsf_connector.runner.modes import BACKFILL_STREAM, TAIL_STREAM, assemble
 from ocsf_connector.sources.okta.auth import BearerAuth, DpopAuth
 from ocsf_connector.telemetry.base import NullMetrics
@@ -96,6 +98,70 @@ def test_an_invalid_config_exits_nonzero(
 
     assert code == 2
     assert "configuration error" in capsys.readouterr().err
+
+
+# --- what a run tells the operator ------------------------------------------
+
+
+def test_the_summary_reports_what_the_run_did() -> None:
+    """Silence made "fetched four hundred events" and "authenticated against an
+    empty org" indistinguishable from outside."""
+    line = summarise(RunStats(pages=3, mapped=12, written=10, duplicates_skipped=2, commits=3))
+
+    assert "3 pages" in line
+    assert "10 events written" in line
+    assert "2 duplicates skipped" in line
+    assert "range complete" not in line, "a tail that stopped has not finished a range"
+
+
+def test_a_finished_range_says_so() -> None:
+    assert "range complete" in summarise(RunStats(pages=1, exhausted=True))
+
+
+def test_a_completed_run_prints_its_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_path = config_with_keys(tmp_path)
+
+    async def fake_backfill(config: object, *, since: str, until: str) -> RunStats:
+        return RunStats(pages=2, mapped=5, written=5, commits=2, exhausted=True)
+
+    monkeypatch.setattr(cli_module, "backfill", fake_backfill)
+
+    code = main(
+        [
+            "--config",
+            str(config_path),
+            "backfill",
+            "--since",
+            "2026-09-01T00:00:00Z",
+            "--until",
+            "2026-09-02T00:00:00Z",
+        ]
+    )
+
+    assert code == 0
+    err = capsys.readouterr().err
+    assert "backfilling" in err, "and says what it is about to do before it does it"
+    assert "5 events written" in err
+    assert "range complete" in err
+
+
+def test_stopping_a_tail_is_not_a_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Tail never returns on its own, so Ctrl-C is how it ends. The cursor is
+    committed after every acknowledged batch, so nothing is lost (§5)."""
+
+    async def interrupted(config: object) -> RunStats:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli_module, "tail", interrupted)
+
+    code = main(["--config", str(config_with_keys(tmp_path)), "tail"])
+
+    assert code == 130
+    assert "interrupted" in capsys.readouterr().err
 
 
 # --- the composition root ---------------------------------------------------
