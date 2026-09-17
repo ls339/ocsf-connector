@@ -25,8 +25,10 @@ private_key_file = "/run/secrets/okta_client_key.pem"
 # dpop_key_file = "/run/secrets/okta_dpop_key.pem"
 
 # Where tail opens the stream the first time, and nowhere else does this come
-# from. It is required and has no default on purpose: computing it at startup
-# would break replay after a crash before the first commit (SPEC 5.2).
+# from. Required by tail, which refuses to start without it; backfill ignores it
+# and takes --since/--until on the command line instead. It has no default on
+# purpose: computing one at startup would break replay after a crash before the
+# first commit (SPEC 5.2). Omit it entirely if you only ever run backfill.
 since = "2026-09-01T00:00:00Z"
 
 # Page size. Okta's ceiling is 1000, and at roughly one request per second this

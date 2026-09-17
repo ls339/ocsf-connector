@@ -92,12 +92,58 @@ def test_a_missing_config_exits_nonzero_without_a_traceback(
 def test_an_invalid_config_exits_nonzero(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    broken = write(tmp_path, MINIMAL.replace('since = "2026-09-01T00:00:00Z"\n', ""))
+    broken = write(tmp_path, MINIMAL + "\nnot_a_real_setting = 1\n")
 
     code = main(["--config", str(broken), "tail"])
 
     assert code == 2
     assert "configuration error" in capsys.readouterr().err
+
+
+def test_tail_refuses_to_start_without_an_opening_bound(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """§5.2's obligation, enforced at the mode entry point: the connector would
+    rather refuse to start than invent a bound that moves between restarts."""
+    without = config_with_keys(tmp_path, MINIMAL.replace('since = "2026-09-01T00:00:00Z"\n', ""))
+
+    code = main(["--config", str(without), "tail"])
+
+    err = capsys.readouterr().err
+    assert code == 2, "a missing setting is a configuration error, not a runtime failure"
+    assert "okta.since" in err
+    assert "§5.2" in err, "and says why, so nobody 'fixes' it with a default"
+
+
+def test_backfill_needs_no_configured_since(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The point of making it optional: backfill takes its bounds as arguments,
+    so a backfill-only deployment should not have to supply a field nothing
+    reads."""
+    without = config_with_keys(tmp_path, MINIMAL.replace('since = "2026-09-01T00:00:00Z"\n', ""))
+    seen: dict[str, str] = {}
+
+    async def fake_backfill(config: object, *, since: str, until: str) -> RunStats:
+        seen.update(since=since, until=until)
+        return RunStats(pages=1, exhausted=True)
+
+    monkeypatch.setattr(cli_module, "backfill", fake_backfill)
+
+    code = main(
+        [
+            "--config",
+            str(without),
+            "backfill",
+            "--since",
+            "2026-09-01T00:00:00Z",
+            "--until",
+            "2026-09-02T00:00:00Z",
+        ]
+    )
+
+    assert code == 0
+    assert seen == {"since": "2026-09-01T00:00:00Z", "until": "2026-09-02T00:00:00Z"}
 
 
 # --- what a run tells the operator ------------------------------------------

@@ -46,6 +46,16 @@ ENV_OVERRIDES: dict[str, tuple[str, ...]] = {
 connector understands, in one greppable place."""
 
 
+class MissingConfig(ValueError):
+    """A setting this mode needs was not supplied.
+
+    Its own type rather than a bare ``ValueError`` so the CLI can tell it apart
+    from the runtime ones -- the cursor origin check raises ``ValueError`` too,
+    and reporting a refused cursor as a configuration mistake would send an
+    operator looking in entirely the wrong place.
+    """
+
+
 class Strict(BaseModel):
     """Unknown keys are an error.
 
@@ -68,8 +78,17 @@ class OktaConfig(Strict):
     dpop_key_file: Path | None = None
     """Present means the app requires DPoP, and this is its *separate* key
     pair -- Okta requires a different one from client authentication (§2.4)."""
-    since: str
-    """Tail's opening bound. Required, and never computed -- see §5.2."""
+    since: str | None = None
+    """Tail's opening bound, and tail's alone -- backfill takes its bounds as
+    arguments.
+
+    Optional here, required by :func:`~ocsf_connector.runner.modes.tail`, which
+    refuses to start without it. Note what has *not* changed: there is still no
+    default value. The §5.2 guarantee was never about the field being mandatory,
+    it was about nobody being able to supply a plausible one -- a
+    ``now() - 1 hour`` here would reintroduce the moving opening cursor in
+    silence. ``None`` cannot be mistaken for a real bound.
+    """
     limit: int = Field(default=1000, ge=1, le=1000)
     poll_seconds: float = Field(default=10.0, gt=0)
     """How long tail sleeps on an empty page. Okta's per-token budget is the

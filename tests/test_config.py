@@ -50,15 +50,21 @@ def test_a_minimal_file_loads_with_sensible_defaults(tmp_path: Path) -> None:
     assert config.stream is None, "so each mode uses its own default"
 
 
-def test_tail_has_no_default_since(tmp_path: Path) -> None:
+def test_since_may_be_absent_but_is_never_defaulted(tmp_path: Path) -> None:
     """docs/SPEC.md §5.2: the opening cursor must be stable across a restart, so
-    it comes from configuration and never from now(). The absence of a default
-    is what enforces that -- a plausible-looking one would reintroduce the
-    duplicate object silently."""
+    it comes from configuration and never from now().
+
+    What enforces that is the absence of a *default*, not the field being
+    mandatory -- a plausible-looking `now() - 1 hour` would reintroduce the
+    duplicate object in silence. So a backfill-only config may omit it, and what
+    it gets is None, which nothing can mistake for a bound. Tail refuses to
+    start on it (see tests/test_cli.py).
+    """
     without = MINIMAL.replace('since = "2026-09-01T00:00:00Z"\n', "")
 
-    with pytest.raises(ValidationError, match="since"):
-        load_config(write(tmp_path, without), env={})
+    config = load_config(write(tmp_path, without), env={})
+
+    assert config.okta.since is None, "absent, rather than quietly invented"
 
 
 def test_an_unknown_key_is_refused(tmp_path: Path) -> None:

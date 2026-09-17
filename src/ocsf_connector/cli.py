@@ -18,7 +18,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from ocsf_connector.config import Config, load_config
+from ocsf_connector.config import Config, MissingConfig, load_config
 from ocsf_connector.runner.loop import RunStats
 from ocsf_connector.runner.modes import backfill, tail
 
@@ -105,6 +105,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             print(f"backfilling {args.since} .. {args.until} {destination}", file=sys.stderr)
             stats = asyncio.run(backfill(config, since=args.since, until=args.until))
+    except MissingConfig as exc:
+        # A setting this mode needs, not a runtime failure -- so it exits 2 with
+        # the other configuration problems rather than 1.
+        print(f"configuration error in {args.config}: {exc}", file=sys.stderr)
+        return 2
     except KeyboardInterrupt:
         # Tail never returns on its own, so this is its normal exit. The cursor
         # is committed after every acknowledged batch, so stopping here loses

@@ -26,7 +26,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from ocsf_connector.config import Config
+from ocsf_connector.config import Config, MissingConfig
 from ocsf_connector.mapping.okta import OktaOcsfMapper
 from ocsf_connector.runner.loop import RunStats, run
 from ocsf_connector.sinks.objects import LocalObjectStore
@@ -112,7 +112,19 @@ async def tail(config: Config) -> RunStats:
 
     Never returns on its own: a polling query always carries a next link, so an
     empty page means "caught up", not "finished" (§2.2).
+
+    Raises :class:`MissingConfig` when no opening bound is configured. This is
+    the obligation §5.2 places on the mode entry point, and it is checked here
+    rather than defaulted anywhere: the connector would rather refuse to start
+    than invent a bound whose value changes between restarts.
     """
+    if config.okta.since is None:
+        raise MissingConfig(
+            "tail needs okta.since in the configuration: the opening bound must be "
+            "the same after a restart, so it cannot be computed at startup (SPEC §5.2)"
+        )
+
+    since = config.okta.since
     async with httpx.AsyncClient() as client:
         parts = assemble(config, client)
         try:
@@ -124,7 +136,7 @@ async def tail(config: Config) -> RunStats:
                 stream=config.stream or TAIL_STREAM,
                 # From configuration, never now(). See §5.2 and this module's
                 # docstring -- the runner cannot check this for us.
-                start=lambda: parts.source.start_tail(config.okta.since),
+                start=lambda: parts.source.start_tail(since),
                 on_idle=lambda: asyncio.sleep(config.okta.poll_seconds),
                 metrics=parts.metrics,
             )
