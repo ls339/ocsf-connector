@@ -31,6 +31,14 @@ uv run mypy src         # types (strict)
 5. **All fixtures are synthetic.** No real tenant id, user, email, or IP in any
    test file, fixture, screenshot, or commit message. This is a public repo about
    security data; people will check.
+6. **Beads is published, so treat a note like a commit.** Issues, notes and
+   memories sync to `refs/dolt/data` on the public remote, which does not feel
+   like publishing while you are typing one. The same prohibition as invariant 5
+   applies: no real tenant id, org URL, user, email, IP, key material, token,
+   cursor, or event payload in any issue, note, or memory. Redact to a
+   placeholder (`integrator-*.okta.com`) or describe the shape instead. When a
+   live run produces something worth recording, record the *finding*, not the
+   data that revealed it.
 
 ## Conventions
 
