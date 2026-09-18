@@ -367,8 +367,17 @@ Privileges, 3 Add User, 4 Remove User, 5 Delete, 6 Create.
 assuming: only Authentication defines `service`, `session` and `is_mfa`; Entity
 Management defines `entity` and no `user`; `http_request` is optional but present
 on all six. An attribute the class does not define makes the record invalid for
-that class, so every event is filtered against a per-class set in
-`mapping/okta.py`.
+that class, so every event is filtered against a per-class set.
+
+**The schema above is data, not code.** All of it — category, legal activity
+ids, attributes, required objects, and the custom-source name each class is
+written to — lives in `ocsf/v1_3_0.yaml`, read by `ocsf/schema.py`. Two modules
+need it for unrelated reasons: the mapper decides what a record may contain, the
+sink names the Security Lake source it goes to (§4.1). They previously held
+separate copies, so adding a class meant editing two files that nothing
+connected. The Okta-to-OCSF *value* translations (`STATUS_IDS`, `SEVERITY_IDS`)
+stay in `mapping/okta.py`: those describe the vendor, not the schema. Bumping
+the emitted OCSF version is now an edit to one YAML file.
 
 ### 3.3 Mapping is data, not code
 

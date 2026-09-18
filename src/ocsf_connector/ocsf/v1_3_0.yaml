@@ -1,0 +1,86 @@
+# OCSF 1.3.0 — the version this connector emits, because Amazon Security Lake
+# accepts 1.3 and earlier from custom sources while the spec itself is at 1.9
+# (docs/SPEC.md §3.1). Every value here was read from the 1.3.0 schema on
+# 2026-09-12, not from the current one: they differ in ways that matter.
+#
+# One class is defined once, here, and read by both the mapper (which decides
+# what a record may contain) and the sink (which names the custom source it is
+# written to). They used to hold separate copies in Python, with nothing
+# relating them.
+#
+# `profiles excluded` is load-bearing: the schema shows `cloud` and `osint` as
+# required on every class, but both belong to opt-in profiles this connector
+# does not enable, so neither appears below.
+
+version: "1.3.0"
+
+# Required of every class, from the base event. Anything here may be emitted
+# regardless of which class a record belongs to.
+base_attributes:
+  - activity_id
+  - category_uid
+  - class_uid
+  - message
+  - metadata
+  - severity_id
+  - status
+  - status_detail
+  - status_id
+  - time
+  - type_uid
+  - unmapped
+
+classes:
+  # Base Event is emittable in its own right, which is what the unknown-event
+  # fallback rests on: OCSF 1.3.0's IAM category has no generic member, and
+  # guessing a nearby class is how a connector mislabels security data (§3.3).
+  0:
+    name: base_event
+    category_uid: 0
+    activities: [0, 99]
+    required: []
+    attributes: []
+
+  3001:
+    name: account_change
+    category_uid: 3
+    activities: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 99]
+    required: [user]
+    attributes: [user, actor, src_endpoint, http_request]
+
+  # No activity 7 (Account Switch) in 1.3.0 -- that arrives later, and a table
+  # naming it would emit records the target version rejects.
+  3002:
+    name: authentication
+    category_uid: 3
+    activities: [0, 1, 2, 3, 4, 5, 6, 99]
+    required: [user]
+    attributes: [user, actor, src_endpoint, http_request, service, session, is_mfa]
+
+  3003:
+    name: authorize_session
+    category_uid: 3
+    activities: [0, 1, 2, 99]
+    required: [user]
+    attributes: [user, actor, src_endpoint, http_request, session, privileges, group]
+
+  3004:
+    name: entity_management
+    category_uid: 3
+    activities: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 99]
+    required: [entity]
+    attributes: [entity, actor, src_endpoint, http_request]
+
+  3005:
+    name: user_access
+    category_uid: 3
+    activities: [0, 1, 2, 99]
+    required: [user, privileges]
+    attributes: [user, actor, src_endpoint, http_request, privileges]
+
+  3006:
+    name: group_management
+    category_uid: 3
+    activities: [0, 1, 2, 3, 4, 5, 6, 99]
+    required: [group]
+    attributes: [group, user, actor, src_endpoint, http_request, privileges]

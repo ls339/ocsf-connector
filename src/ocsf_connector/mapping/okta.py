@@ -34,68 +34,20 @@ import yaml
 
 from ocsf_connector.domain import OcsfEvent
 
+# The OCSF schema itself is data, in one place, read by the sink too. Only the
+# Okta-to-OCSF value translations below live here, because those describe the
+# vendor rather than the schema.
+from ocsf_connector.ocsf.schema import (
+    ACTIVITY_IDS,
+    BASE_ATTRIBUTES,
+    CLASS_ATTRIBUTES,
+    CLASS_CATEGORY_UID,
+    REQUIRED_OBJECTS,
+)
+
 TABLE_PATH = Path(__file__).with_name("okta_ocsf.yaml")
 
 BASE_EVENT_CLASS_UID = 0
-
-CLASS_CATEGORY_UID = {0: 0, 3001: 3, 3002: 3, 3003: 3, 3004: 3, 3005: 3, 3006: 3}
-"""OCSF 1.3.0: Base Event sits in category 0, the six IAM classes in category 3."""
-
-ACTIVITY_IDS: dict[int, frozenset[int]] = {
-    0: frozenset({0, 99}),
-    3001: frozenset({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 99}),
-    3002: frozenset({0, 1, 2, 3, 4, 5, 6, 99}),
-    3003: frozenset({0, 1, 2, 99}),
-    3004: frozenset({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 99}),
-    3005: frozenset({0, 1, 2, 99}),
-    3006: frozenset({0, 1, 2, 3, 4, 5, 6, 99}),
-}
-"""Verified against the 1.3.0 schema, which is not the current one: Authentication
-has no Account Switch (7) until later versions, and IAM has no 3007/3008 here."""
-
-CLASS_ATTRIBUTES: dict[int, frozenset[str]] = {
-    0: frozenset(),
-    3001: frozenset({"user", "actor", "src_endpoint", "http_request"}),
-    3002: frozenset(
-        {"user", "actor", "src_endpoint", "http_request", "service", "session", "is_mfa"}
-    ),
-    3003: frozenset(
-        {"user", "actor", "src_endpoint", "http_request", "session", "privileges", "group"}
-    ),
-    3004: frozenset({"entity", "actor", "src_endpoint", "http_request"}),
-    3005: frozenset({"user", "actor", "src_endpoint", "http_request", "privileges"}),
-    3006: frozenset({"group", "user", "actor", "src_endpoint", "http_request", "privileges"}),
-}
-"""What each class defines beyond the base event, profiles excluded. ``cloud`` and
-``osint`` read as required in the schema browser but belong to opt-in profiles,
-so they are deliberately absent."""
-
-BASE_ATTRIBUTES = frozenset(
-    {
-        "activity_id",
-        "category_uid",
-        "class_uid",
-        "message",
-        "metadata",
-        "severity_id",
-        "status",
-        "status_detail",
-        "status_id",
-        "time",
-        "type_uid",
-        "unmapped",
-    }
-)
-
-REQUIRED_OBJECTS: dict[int, tuple[str, ...]] = {
-    0: (),
-    3001: ("user",),
-    3002: ("user",),
-    3003: ("user",),
-    3004: ("entity",),
-    3005: ("user", "privileges"),
-    3006: ("group",),
-}
 
 STATUS_IDS = {"SUCCESS": 1, "FAILURE": 2}
 """Okta's documented outcomes. Anything else becomes 99 (Other) rather than being

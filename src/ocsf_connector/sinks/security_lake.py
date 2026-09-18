@@ -36,6 +36,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from ocsf_connector.domain import OcsfEvent
+
+# One source per class, named as OCSF names the class -- the same definition the
+# mapper reads, rather than a second copy that could drift from it.
+from ocsf_connector.ocsf.schema import CLASS_SOURCES
 from ocsf_connector.sinks.objects import ObjectStore
 from ocsf_connector.telemetry.base import Metrics, NullMetrics
 
@@ -51,19 +55,6 @@ DATA_PAGE_SIZE = 1024 * 1024
 
 PARQUET_VERSION = "2.6"
 """Security Lake accepts Parquet 1.x and 2.x (§4)."""
-
-CLASS_SOURCES = {
-    0: "base_event",
-    3001: "account_change",
-    3002: "authentication",
-    3003: "authorize_session",
-    3004: "entity_management",
-    3005: "user_access",
-    3006: "group_management",
-}
-"""One registered custom source per OCSF class (§4.1), named for the class as
-OCSF 1.3.0 names it. A class absent here has no source to write to, which is a
-packaging bug rather than a runtime condition."""
 
 SPINE = pa.schema(
     [
