@@ -261,6 +261,41 @@ def test_required_objects_are_always_present(mapper: OktaOcsfMapper) -> None:
             assert event.body.get(name), f"{event_type} has no {name}"
 
 
+def test_an_application_actor_does_not_become_a_user(mapper: OktaOcsfMapper) -> None:
+    """An OAuth client-credentials grant acts as the *app*. Copying that into
+    OCSF `user` puts applications in the identity lake, where anyone counting
+    distinct users or alerting on user behavior sees machine traffic.
+
+    Found on the first live backfill, and only reachable because the OAuth family
+    now maps to 3002 -- before that these were Base Event and carried no user.
+    """
+    event = mapper.map(
+        record(
+            eventType="app.oauth2.token.grant.access_token",
+            actor={
+                "id": "0oasynthetic-app",
+                "type": "PublicClientApp",
+                "displayName": "Synthetic Service App",
+                "alternateId": "unknown",
+            },
+        )
+    )
+
+    assert event.body["user"] == {"name": "unknown"}, "the class placeholder, not the app"
+    assert "actor" not in event.body, "and no actor.user either"
+    assert event.body["unmapped"]["actor"]["displayName"] == "Synthetic Service App", (
+        "the real actor is preserved, just not as a person"
+    )
+
+
+def test_oktas_unknown_placeholder_never_becomes_an_email(mapper: OktaOcsfMapper) -> None:
+    """`alternateId` is "unknown" when Okta has none. It is not an address."""
+    event = mapper.map(record(actor={"id": "00usynth", "type": "User", "alternateId": "unknown"}))
+
+    assert event.body["user"] == {"uid": "00usynth"}
+    assert "email_addr" not in event.body["user"]
+
+
 def test_entity_management_names_its_target(mapper: OktaOcsfMapper) -> None:
     event = mapper.map(
         record(

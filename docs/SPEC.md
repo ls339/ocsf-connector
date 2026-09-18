@@ -388,7 +388,23 @@ Rules:
   quietly mislabels security data.
 - **`published` is an ISO 8601 string; OCSF `time` is epoch milliseconds.** A
   timestamp that will not parse yields `0` rather than an exception, and the
-  original string is kept in `metadata.original_time` either way.
+  original string is kept in `metadata.original_time` either way. **Nothing
+  observes a `0`**: the runner computes ingest lag and `last_published` only
+  over events whose timestamp parsed, because `now() - 0` is a lag of fifty-odd
+  years and one such event permanently wrecks the p99 of the headline SLI (§7).
+  The event still ships — the mapper never drops — so it lands in an
+  `eventDay=19700101` partition, which is ugly and deliberately so: bad
+  timestamps should be findable, not hidden.
+- **An actor is not always a person.** Okta states that every event has an
+  actor, but an OAuth client-credentials grant acts as the *application*.
+  `user` is populated only when `actor.type` is `User` or absent; anything else
+  leaves the class's required placeholder standing and preserves the real actor
+  under `unmapped`. Putting applications in `user` would corrupt every count of
+  distinct users and every alert on user behavior. Okta enumerates no
+  vocabulary for `actor.type` — its schema calls it a bare string — so this
+  recognizes the human value rather than guessing at the machine ones. For the
+  same reason `alternateId` is never copied to `email_addr` when it is Okta's
+  literal `"unknown"` placeholder.
 - The table is seeded from the event types Okta documents. It is not exhaustive
   and is not meant to be — Okta adds types continuously, which is the whole
   reason the fallback and the counter exist.

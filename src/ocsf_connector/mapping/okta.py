@@ -255,6 +255,25 @@ class OktaOcsfMapper:
             }
 
     def _actor(self, reader: _Reader) -> dict[str, Any]:
+        """The acting *person*, or nothing at all.
+
+        Okta says "all events have actors", but an actor is not always a human:
+        an OAuth client-credentials grant acts as the application. Copying that
+        into OCSF ``user`` puts applications in the identity lake, where anyone
+        counting distinct users or alerting on user behavior then sees machine
+        traffic. So a non-``User`` actor yields nothing here, the class's
+        required placeholder stands in, and the real actor survives whole under
+        ``unmapped``.
+
+        Okta enumerates no vocabulary for ``actor.type`` -- the OpenAPI schema
+        calls it a bare string, "Type of actor" -- so this cannot whitelist the
+        machine types. It recognizes the human one and is conservative about
+        everything else, which is the direction that fails safe.
+        """
+        actor_type = str(reader.get("actor", "type") or "")
+        if actor_type and actor_type.casefold() != "user":
+            return {}
+
         user: dict[str, Any] = {}
         for source_key, target_key in (
             ("id", "uid"),
@@ -262,7 +281,9 @@ class OktaOcsfMapper:
             ("alternateId", "email_addr"),
         ):
             value = reader.get("actor", source_key)
-            if value:
+            # "unknown" is Okta's placeholder for an absent alternateId, not an
+            # address. Copying it into email_addr invents contact details.
+            if value and str(value).casefold() != "unknown":
                 user[target_key] = str(value)
         return user
 

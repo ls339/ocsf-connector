@@ -100,8 +100,14 @@ async def run(
                 fresh.append(event)
         duplicates += len(events) - len(fresh)
 
-        if events:
-            newest = max(event.time_ms for event in events)
+        # Only events whose timestamp actually parsed. An unparseable `published`
+        # maps to 0 by design (§3.3), and 0 here would mean a lag of now() --
+        # more than fifty years -- permanently wrecking the p99 of the headline
+        # SLI, and writing 0 as last_published when a page holds nothing else.
+        # No observation beats a false one; the event itself still ships.
+        dated = [event.time_ms for event in events if event.time_ms > 0]
+        if dated:
+            newest = max(dated)
             await store.record_published(stream, newest)
             # The one use `published` is safe for: how far behind we are, never
             # where to resume from (§2.1).

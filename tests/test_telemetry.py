@@ -24,6 +24,7 @@ from ocsf_connector.mapping.okta import OktaOcsfMapper
 from ocsf_connector.runner.loop import run
 from ocsf_connector.sinks.objects import LocalObjectStore
 from ocsf_connector.sinks.security_lake import SecurityLakeSink
+from ocsf_connector.sources.base import Page
 from ocsf_connector.sources.okta.source import OktaSource
 from ocsf_connector.state.memory import InMemoryStateStore
 from ocsf_connector.telemetry.base import Metrics, NullMetrics
@@ -195,6 +196,61 @@ async def test_the_runner_reports_throughput_and_commit_lag() -> None:
     assert metrics.ingest_lag[0] == pytest.approx(100.5 - BASE_TIME_MS / 1000)
     assert metrics.ingest_lag[1] == pytest.approx(102.0 - (BASE_TIME_MS + 1000) / 1000)
     assert metrics.errors == []
+
+
+async def test_an_undated_event_reports_no_lag_but_still_ships() -> None:
+    """A `published` that will not parse maps to time_ms 0 by design (§3.3).
+
+    Reporting `now - 0` as the lag puts more than fifty years into the histogram
+    SPEC §7 calls the headline SLI, and one such event poisons its p99 for good.
+    No observation beats a false one -- but the event itself must still reach the
+    sink, because the mapper never drops (invariant 4).
+    """
+    metrics = RecordingMetrics()
+    undated = {"uuid": "b1", "published": "not-a-timestamp", "eventType": "user.session.start"}
+    source = ScriptedSource({"c0": Page(records=[undated], next_cursor=None)})
+    sink = RecordingSink()
+    store = InMemoryStateStore()
+
+    await run(
+        source=source,
+        mapper=OktaOcsfMapper(),
+        sink=sink,
+        store=store,
+        stream=STREAM,
+        start=lambda: source.start_tail("2026-09-18T00:00:00Z"),
+        metrics=metrics,
+        clock=lambda: 1_789_000_000.0,
+    )
+
+    assert metrics.ingest_lag == [], "no lag beats a fifty-year one"
+    assert sink.delivered() == ["b1"], "and the event still ships"
+
+
+async def test_a_dated_event_on_the_same_page_still_reports_lag() -> None:
+    """The guard skips undated events, not whole pages: one bad timestamp must
+    not silence the SLI for everything beside it."""
+    metrics = RecordingMetrics()
+    dated = {
+        "uuid": "g1",
+        "published": "2026-09-18T10:00:00.000Z",
+        "eventType": "user.session.start",
+    }
+    undated = {"uuid": "b1", "published": "nonsense", "eventType": "user.session.start"}
+    source = ScriptedSource({"c0": Page(records=[undated, dated], next_cursor=None)})
+
+    await run(
+        source=source,
+        mapper=OktaOcsfMapper(),
+        sink=RecordingSink(),
+        store=InMemoryStateStore(),
+        stream=STREAM,
+        start=lambda: source.start_tail("2026-09-18T00:00:00Z"),
+        metrics=metrics,
+        clock=lambda: 1_789_725_601.0,
+    )
+
+    assert metrics.ingest_lag == [pytest.approx(1.0)], "measured from the event that had a time"
 
 
 async def test_a_sink_failure_is_counted_against_the_sink() -> None:
