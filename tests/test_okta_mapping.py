@@ -95,6 +95,12 @@ def test_a_session_start_maps_to_the_spec_worked_example(mapper: OktaOcsfMapper)
     assert body["src_endpoint"]["location"] == {"city": "Exampleville", "country": "Exampleland"}
     assert body["http_request"]["user_agent"] == "Mozilla/5.0 (Synthetic)"
     assert body["service"], "3002 constrains at_least_one: [service, dst_endpoint]"
+    assert body["is_mfa"] is False, (
+        "3002 defines is_mfa, so it is emitted even when false. Asserted here "
+        "because the per-class filter test cannot see this: drop is_mfa from the "
+        "schema and the mapper stops emitting it, which is still a subset of what "
+        "the class allows"
+    )
 
 
 def test_a_failure_outcome_becomes_status_id_2(mapper: OktaOcsfMapper) -> None:
