@@ -12,25 +12,11 @@ It must never raise and must never silently drop.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Protocol
 
+from ocsf_connector.domain import OcsfEvent
 
-@dataclass(frozen=True, slots=True)
-class OcsfEvent:
-    """A mapped event, ready for a sink.
-
-    ``class_uid`` is lifted out of ``body`` because Security Lake requires one
-    OCSF class per Parquet object, so the sink must bucket on it without
-    inspecting the payload. ``time_ms`` is lifted for the same reason: objects
-    partition by ``eventDay`` and records within an object sort by time.
-    """
-
-    class_uid: int
-    time_ms: int
-    uid: str
-    """Source event id -- Okta's ``uuid``. The dedup key. See docs/SPEC.md §5."""
-    body: dict[str, Any]
+__all__ = ["Mapper", "OcsfEvent"]
 
 
 class Mapper(Protocol):

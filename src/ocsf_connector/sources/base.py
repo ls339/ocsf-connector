@@ -17,13 +17,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-Cursor = str
-"""The URL to GET next.
+from ocsf_connector.domain import Cursor
 
-Persisted verbatim and never parsed. Only the *opening* cursor is built here, and
-only from configured query parameters; every later one comes from the vendor's
-``Link`` header. The ``after`` value inside is never constructed or read.
-"""
+__all__ = ["Cursor", "Page", "Source"]
 
 
 @dataclass(frozen=True, slots=True)

@@ -18,7 +18,7 @@ from typing import Any
 import pyarrow.parquet as pq
 import pytest
 
-from ocsf_connector.mapping.base import OcsfEvent
+from ocsf_connector.domain import OcsfEvent
 from ocsf_connector.mapping.okta import OktaOcsfMapper
 from ocsf_connector.sinks.objects import LocalObjectStore
 from ocsf_connector.sinks.security_lake import SPINE, SecurityLakeSink

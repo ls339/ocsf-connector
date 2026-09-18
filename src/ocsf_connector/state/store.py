@@ -23,7 +23,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol
 
-from ocsf_connector.sources.base import Cursor
+from ocsf_connector.domain import Cursor
 
 
 class StateStore(Protocol):

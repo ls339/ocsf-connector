@@ -37,7 +37,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from ocsf_connector.sources.base import Cursor
+from ocsf_connector.domain import Cursor
 
 DEFAULT_TTL_SECONDS = 24 * 60 * 60
 

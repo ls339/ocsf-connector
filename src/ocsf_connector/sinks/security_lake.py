@@ -35,7 +35,7 @@ from io import BytesIO
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from ocsf_connector.mapping.base import OcsfEvent
+from ocsf_connector.domain import OcsfEvent
 from ocsf_connector.sinks.objects import ObjectStore
 from ocsf_connector.telemetry.base import Metrics, NullMetrics
 

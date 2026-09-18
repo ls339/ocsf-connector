@@ -10,8 +10,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from ocsf_connector.mapping.base import OcsfEvent
-from ocsf_connector.sources.base import Cursor, Page
+from ocsf_connector.domain import Cursor, OcsfEvent
+from ocsf_connector.sources.base import Page
 from ocsf_connector.state.store import StateStore
 
 BASE_TIME_MS = 1_756_900_000_000

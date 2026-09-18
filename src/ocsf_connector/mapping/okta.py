@@ -32,7 +32,7 @@ from typing import Any
 
 import yaml
 
-from ocsf_connector.mapping.base import OcsfEvent
+from ocsf_connector.domain import OcsfEvent
 
 TABLE_PATH = Path(__file__).with_name("okta_ocsf.yaml")
 

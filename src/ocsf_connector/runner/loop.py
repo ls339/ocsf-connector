@@ -15,9 +15,10 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from ocsf_connector.mapping.base import Mapper, OcsfEvent
+from ocsf_connector.domain import Cursor, OcsfEvent
+from ocsf_connector.mapping.base import Mapper
 from ocsf_connector.sinks.base import Sink
-from ocsf_connector.sources.base import Cursor, Source
+from ocsf_connector.sources.base import Source
 from ocsf_connector.state.store import StateStore
 from ocsf_connector.telemetry.base import Metrics, NullMetrics
 

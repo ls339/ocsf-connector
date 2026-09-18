@@ -22,7 +22,8 @@ from urllib.parse import urlencode
 
 import httpx
 
-from ocsf_connector.sources.base import Cursor, Page
+from ocsf_connector.domain import Cursor
+from ocsf_connector.sources.base import Page
 from ocsf_connector.sources.okta.auth import Authorizer
 from ocsf_connector.telemetry.base import Metrics, NullMetrics
 

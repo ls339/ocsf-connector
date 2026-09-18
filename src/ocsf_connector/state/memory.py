@@ -12,7 +12,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
-from ocsf_connector.sources.base import Cursor
+from ocsf_connector.domain import Cursor
 
 DEFAULT_TTL_SECONDS = 24 * 60 * 60
 

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from ocsf_connector.mapping.base import OcsfEvent
+from ocsf_connector.domain import OcsfEvent
 
 
 class Sink(Protocol):
