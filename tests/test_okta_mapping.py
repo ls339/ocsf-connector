@@ -9,6 +9,7 @@ Records are the synthetic fixtures (invariant 5).
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -294,6 +295,29 @@ def test_group_membership_names_the_group(mapper: OktaOcsfMapper) -> None:
 
 
 # --- the table itself -------------------------------------------------------
+
+
+def test_the_table_version_moves_with_the_table() -> None:
+    """The revision rides in metadata.labels on every record, so a changed table
+    under a stale version mislabels everything it produces -- and the label is
+    the only way to trace a row in Security Lake back to the rules behind it
+    (docs/SPEC.md §3.1).
+
+    Nothing asserted this until a mutation that froze the version while adding
+    entries passed the whole suite. The version is pinned against a digest of
+    the entries: change one without the other and this fails, which is the
+    point.
+    """
+    mapper = OktaOcsfMapper()
+    entries = sorted(
+        (name, entry["class_uid"], entry["activity_id"]) for name, entry in mapper._events.items()
+    )
+    digest = hashlib.sha256(repr(entries).encode()).hexdigest()[:12]
+
+    assert (mapper.mapping_version, digest) == ("okta-2026.09.18", "5d4135444e9f"), (
+        "the table and its version must change together: update both, including "
+        f"this assertion, to {mapper.mapping_version!r} / {digest!r}"
+    )
 
 
 def test_every_table_entry_is_legal_in_ocsf_1_3_0(mapper: OktaOcsfMapper) -> None:
