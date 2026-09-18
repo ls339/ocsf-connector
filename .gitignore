@@ -22,8 +22,13 @@ secrets/
 # must not carry (CLAUDE.md invariant 5).
 config.toml
 
-# Local run state
+# Local run state. The -wal and -shm sidecars matter as much as the database:
+# the store runs in WAL mode (SPEC §5.3), so they hold uncommitted transactions
+# and the shared-memory index -- the same cursor and seen-set data, and just as
+# unwelcome in a public repo.
 state/*.db
+state/*.db-wal
+state/*.db-shm
 out/
 .terraform/
 *.tfstate

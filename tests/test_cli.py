@@ -37,6 +37,11 @@ def config_with_keys(tmp_path: Path, body: str = MINIMAL, *, dpop: bool = False)
     key = tmp_path / "client.pem"
     key.write_text(CLIENT_KEY)
     body = body.replace("/run/secrets/key.pem", str(key))
+    # Point the store at tmp_path. The default is a *relative* path, so without
+    # this the suite opens state/ocsf-connector.db in whatever directory pytest
+    # was run from -- writing a database into the working tree, which a test has
+    # no business doing.
+    body += f'\n[state]\ndatabase = "{tmp_path / "state.db"}"\n'
     if dpop:
         dpop_key = tmp_path / "dpop.pem"
         dpop_key.write_text(DPOP_KEY)
