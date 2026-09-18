@@ -201,6 +201,10 @@ def test_targets_the_mapping_could_not_lift_still_reach_unmapped(
         ("application.user_membership.add", 3005, 1),
         ("policy.rule.update", 3004, 3),
         ("security.request.blocked", 0, 99),
+        ("app.oauth2.token.grant", 3002, 4),
+        ("app.oauth2.token.grant.access_token", 3002, 4),
+        ("app.oauth2.token.grant.refresh_token", 3002, 5),
+        ("app.oauth2.authorize.code", 3002, 3),
     ],
 )
 def test_table_entries_reach_the_event(
@@ -210,6 +214,30 @@ def test_table_entries_reach_the_event(
 
     assert (event.class_uid, event.body["activity_id"]) == (class_uid, activity_id)
     assert event.body["type_uid"] == class_uid * 100 + activity_id
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    [
+        "user.authentication.auth_via_mfa",
+        "user.authentication.verify",
+        "app.oauth2.token.grant.id_token",
+        "policy.evaluate_sign_on",
+        "user.session.access_admin_app",
+    ],
+)
+def test_types_awaiting_a_decision_stay_at_base_event(
+    mapper: OktaOcsfMapper, event_type: str
+) -> None:
+    """These are unmapped on purpose, not by omission (docs/SPEC.md §3.3).
+
+    A live org emits all five. Mapping the first three to activity 1 Logon would
+    double-count sign-ins -- one user.session.start plus one auth_via_mfa reads
+    as two logons to anyone counting them. The last two have no home in OCSF
+    1.3.0's IAM category at all. This test exists so that nobody closes the gap
+    helpfully without making the decision first.
+    """
+    assert mapper.map(record(eventType=event_type)).class_uid == 0
 
 
 def test_no_event_carries_an_attribute_its_class_does_not_define(
@@ -298,7 +326,15 @@ def test_a_table_that_does_not_fit_the_target_version_fails_to_load(
         OktaOcsfMapper(table_path=table)
 
 
-def test_the_recorded_fixture_maps(mapper: OktaOcsfMapper) -> None:
+def test_the_recorded_fixture_maps() -> None:
+    """Builds its own mapper rather than taking the module-scoped one.
+
+    It asserts a drift *count*, and the shared mapper accumulates across every
+    test that touches it -- so the number was only ever right by accident of
+    ordering. A second test mapping the same event type is enough to break it,
+    which is exactly what happened.
+    """
+    mapper = OktaOcsfMapper()
     events = [mapper.map(raw) for raw in fixture_records()]
 
     assert [event.class_uid for event in events] == [3002, 0]

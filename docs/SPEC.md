@@ -392,6 +392,38 @@ Rules:
 - The table is seeded from the event types Okta documents. It is not exhaustive
   and is not meant to be — Okta adds types continuously, which is the whole
   reason the fallback and the counter exist.
+
+**What a live org actually emitted, 2026-09-18.** The first real backfill mapped
+8 events and dropped 58 to Base Event across nine unknown types — dominated by
+OAuth token issuance, because the org was two days old and its history is mostly
+setup traffic. That ratio is not a coverage measure; a production org's steady
+state is `user.session.start` and `user.authentication.sso`, both already mapped.
+
+There is **no authoritative Okta→OCSF mapping** to defer to. Okta's own
+`okta-ocsf-syslog` is a 2023 project template, unlicensed, that hardcodes
+`class_uid` 3002 for every event and derives `activity_id` from one boolean — a
+demonstration of shape, not a table. These are our decisions to defend:
+
+| Okta event | OCSF | Why |
+|---|---|---|
+| `app.oauth2.token.grant`, `.access_token` | 3002 / 4 Service Ticket Request | A token request, in the Kerberos vocabulary 1.3.0 uses |
+| `app.oauth2.token.grant.refresh_token` | 3002 / 5 Service Ticket Renew | A refresh *is* a renewal — the clearest of the nine |
+| `app.oauth2.authorize.code` | 3002 / 3 Authentication Ticket | The code is the intermediate credential exchanged for tokens |
+
+Authorize Session (3003) was rejected for all of them: its only activities are
+Assign Privileges and Assign Groups. Note that a client-credentials grant has no
+user while 3002 requires one, so those records carry a placeholder — honest, but
+it distorts any count of distinct users.
+
+**Five stay unmapped deliberately**, and the reason is analytic rather than
+structural. Mapping `user.authentication.auth_via_mfa`,
+`user.authentication.verify` or `app.oauth2.token.grant.id_token` to activity 1
+Logon would **double-count sign-ins**: one `user.session.start` plus one
+`auth_via_mfa` reads as two logons. `policy.evaluate_sign_on` is a policy
+decision and `user.session.access_admin_app` is app access inside an existing
+session; 1.3.0's IAM category has no home for either. Base Event is the honest
+answer until someone decides otherwise, the drift counter keeps naming them, and
+a test pins the omission so it cannot be closed by accident.
 - Every source field that is not mapped goes into `unmapped`. Populating
   `unmapped` honestly is a feature; silently discarding source fields is the
   signature of a toy connector.

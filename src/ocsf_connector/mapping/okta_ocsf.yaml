@@ -10,7 +10,7 @@
 # Seeded from the event types Okta names on its System Log query page. Okta emits
 # hundreds more and adds them continuously; that is what the fallback is for.
 
-version: okta-2026.09.12
+version: okta-2026.09.18
 ocsf_version: "1.3.0"
 
 # Base Event (class_uid 0, category_uid 0) with activity Unknown. OCSF 1.3.0's
@@ -61,6 +61,29 @@ events:
   policy.rule.delete: {class_uid: 3004, activity_id: 4}
   policy.rule.activate: {class_uid: 3004, activity_id: 10}
   policy.rule.deactivate: {class_uid: 3004, activity_id: 11}
+
+  # --- OAuth token issuance (3002 Authentication) --------------------------
+  # Added after a live org showed these dominating real traffic. OCSF 1.3.0's
+  # Authentication activities are Kerberos vocabulary; OAuth maps onto them
+  # readably, and Authorize Session (3003) does not fit at all -- its activities
+  # are Assign Privileges and Assign Groups.
+  #
+  # A client-credentials grant has no user, and 3002 requires one, so those
+  # records carry a placeholder user. Honest, but worth knowing before counting
+  # distinct users.
+  app.oauth2.token.grant: {class_uid: 3002, activity_id: 4}               # Service Ticket Request
+  app.oauth2.token.grant.access_token: {class_uid: 3002, activity_id: 4}
+  app.oauth2.token.grant.refresh_token: {class_uid: 3002, activity_id: 5}  # Renew
+  app.oauth2.authorize.code: {class_uid: 3002, activity_id: 3}            # Authentication Ticket
+
+  # Deliberately absent, awaiting a decision (SPEC §3.3, issue pet.15):
+  #   user.authentication.auth_via_mfa, user.authentication.verify,
+  #   app.oauth2.token.grant.id_token  -- mapping any of these to activity 1
+  #     would double-count sign-ins against user.session.start
+  #   policy.evaluate_sign_on          -- a policy decision, no IAM home in 1.3.0
+  #   user.session.access_admin_app    -- app access inside an existing session
+  # They fall through to Base Event, which is the honest answer until someone
+  # decides, and the drift counter keeps naming them until someone does.
 
   # --- no IAM home in 1.3.0 -------------------------------------------------
   # A blocked request is not an identity event. It is mapped deliberately to
