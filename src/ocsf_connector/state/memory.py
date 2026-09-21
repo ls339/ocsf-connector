@@ -83,11 +83,28 @@ class InMemoryStateStore:
         if row.last_published_ms is None or published_ms > row.last_published_ms:
             row.last_published_ms = published_ms
 
+    async def get_last_published(self, stream: str) -> int | None:
+        """Never used to resume; ingest lag reads it.
+
+        Its absence here was not harmless. The shared store suite guarded this
+        assertion with ``isinstance(store, SqliteStateStore)``, so the claim
+        that ``last_published`` only moves forward was never checked against
+        this implementation at all -- the comparison in
+        :meth:`record_published` could have been inverted and the suite would
+        have stayed green.
+        """
+        row = self._streams.get(stream)
+        return row.last_published_ms if row else None
+
     def has_committed(self, stream: str) -> bool:
-        """Not part of the protocol -- lets a backfill caller tell "range
-        finished" from "never started", both of which read as a ``None`` cursor."""
+        """Tell "range finished" from "never started", both of which read as a
+        ``None`` cursor."""
         row = self._streams.get(stream)
         return row is not None and row.committed
+
+    def close(self) -> None:
+        """Nothing to release. Present so an owner can close any store without
+        first asking which kind it is holding."""
 
     async def purge_expired(self) -> int:
         """Async to match the durable store, whose purge is a write that has to

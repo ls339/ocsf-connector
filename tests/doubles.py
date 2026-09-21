@@ -157,6 +157,53 @@ class CrashOnCommit:
     async def record_published(self, stream: str, published_ms: int) -> None:
         await self.inner.record_published(stream, published_ms)
 
+    async def purge_expired(self) -> int:
+        # Forwarded like everything else: a wrapper that implements only the
+        # methods it wants to intercept stops satisfying the protocol the moment
+        # the protocol grows, and the failure is an AttributeError mid-run.
+        return await self.inner.purge_expired()
+
+
+@dataclass(slots=True)
+class PurgeCounting:
+    """Counts how often the runner reclaims the seen-set.
+
+    Reclaiming is invisible from outside: expired uids are already filtered by
+    ``filter_unseen``, so a store that never purges behaves identically to one
+    that does, right up until the table is enormous. Nothing observable
+    separates them, which is exactly how ``purge_expired`` came to be
+    implemented twice and called nowhere -- so this counts calls rather than
+    asserting on behavior it cannot see.
+    """
+
+    inner: StateStore
+    purges: int = 0
+
+    async def get_cursor(self, stream: str) -> Cursor | None:
+        return await self.inner.get_cursor(stream)
+
+    async def commit(
+        self,
+        stream: str,
+        cursor: Cursor | None,
+        uids: Sequence[str],
+        mapping_version: str,
+    ) -> None:
+        await self.inner.commit(stream, cursor, uids, mapping_version)
+
+    async def filter_unseen(self, uids: Sequence[str]) -> list[str]:
+        return await self.inner.filter_unseen(uids)
+
+    async def get_mapping_version(self, stream: str) -> str | None:
+        return await self.inner.get_mapping_version(stream)
+
+    async def record_published(self, stream: str, published_ms: int) -> None:
+        await self.inner.record_published(stream, published_ms)
+
+    async def purge_expired(self) -> int:
+        self.purges += 1
+        return await self.inner.purge_expired()
+
 
 @dataclass(slots=True)
 class DriftingStartSource(ScriptedSource):

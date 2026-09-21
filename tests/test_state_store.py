@@ -76,8 +76,10 @@ async def test_last_published_only_moves_forward_and_is_not_the_cursor(
     await store.record_published(STREAM, 1_000)
 
     assert await store.get_cursor(STREAM) is None, "published must never become resume state"
-    if isinstance(store, SqliteStateStore):
-        assert await store.get_last_published(STREAM) == 2_000, "and it never goes backwards"
+    # Asserted for both stores now. Behind an isinstance check this ran only for
+    # SQLite, so the in-memory comparison could have been inverted unnoticed --
+    # which is the whole reason the name of this test was a promise it did not keep.
+    assert await store.get_last_published(STREAM) == 2_000, "and it never goes backwards"
 
 
 async def test_a_finished_range_is_distinguishable_from_a_fresh_stream(

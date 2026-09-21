@@ -22,6 +22,7 @@ from tests.doubles import (
     CrashOnCommit,
     DriftingStartSource,
     FailingSink,
+    PurgeCounting,
     RecordingSink,
     ScriptedSource,
     SimulatedCrash,
@@ -310,6 +311,51 @@ async def test_crash_before_the_first_commit_replays_into_the_same_object(
     delivered = sink.delivered()
     assert sorted(delivered) == ["a1", "b1"]
     assert len(delivered) == len(set(delivered)), f"duplicates at the sink: {delivered}"
+
+
+async def test_the_runner_reclaims_the_seen_set_as_it_runs(stores: StoreHarness) -> None:
+    """Nothing else can. ``purge_expired`` sat outside the store protocol, so no
+    component owned calling it -- the loop could not see it and the composition
+    root did not use it, and it fell between the seams.
+
+    Purging at startup would not do: a tail never restarts, which is precisely
+    the mode that accumulates rows without bound.
+    """
+    source = ScriptedSource(chain([["a1"], ["b1"]]))
+    store = PurgeCounting(stores.open())
+
+    await run(
+        source=source,
+        mapper=CountingMapper(),
+        sink=RecordingSink(),
+        store=store,
+        stream=STREAM,
+        start=lambda: source.start_backfill("2026-09-01T00:00:00Z", "2026-09-02T00:00:00Z"),
+        purge_every_seconds=0.0,
+    )
+
+    assert store.purges > 0, "the seen-set is never reclaimed"
+
+
+async def test_reclaiming_is_paced_rather_than_done_every_commit(
+    stores: StoreHarness,
+) -> None:
+    """The durable purge is a DELETE under the same lock and fsync discipline as
+    every other transaction. Running it after each batch would cost more than
+    the rows it frees, so the default interval must actually gate it."""
+    source = ScriptedSource(chain([["a1"], ["b1"]]))
+    store = PurgeCounting(stores.open())
+
+    await run(
+        source=source,
+        mapper=CountingMapper(),
+        sink=RecordingSink(),
+        store=store,
+        stream=STREAM,
+        start=lambda: source.start_backfill("2026-09-01T00:00:00Z", "2026-09-02T00:00:00Z"),
+    )
+
+    assert store.purges == 0, "an hour has not passed inside a two-page backfill"
 
 
 async def test_a_moving_opening_cursor_breaks_first_batch_idempotency(

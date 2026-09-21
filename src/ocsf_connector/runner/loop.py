@@ -46,6 +46,7 @@ async def run(
     max_pages: int | None = None,
     metrics: Metrics | None = None,
     clock: Callable[[], float] = time.time,
+    purge_every_seconds: float = 3600.0,
 ) -> RunStats:
     """Drive one stream until it is exhausted or ``max_pages`` is reached.
 
@@ -57,6 +58,10 @@ async def run(
     "caught up", not "finished", so the caller sleeps there and the loop
     re-requests. ``max_pages`` bounds an otherwise infinite tail; it exists for
     tests and for graceful shutdown, not as a throttle.
+
+    ``purge_every_seconds`` paces the seen-set reclaim. The runner owns it
+    because nothing else can: a tail never restarts, so a purge at startup would
+    run exactly once in the mode that accumulates rows forever.
     """
     # Silence by default: the connector must not need an observability stack to
     # run (docs/SPEC.md §7).
@@ -73,6 +78,7 @@ async def run(
     # ended. See docs/SPEC.md §5.2.
     batch_key = cursor
     batch_opened_at = clock()
+    last_purge_at = batch_opened_at
     pending: list[str] = []
     pages = mapped = written = duplicates = commits = 0
     exhausted = False
@@ -139,6 +145,24 @@ async def run(
             pending = []
             batch_key = next_cursor if next_cursor is not None else batch_key
             batch_opened_at = clock()
+
+            # Housekeeping: after the commit, never between it and the flush.
+            # Paced off the timestamp just read rather than taking another --
+            # the clock is injected, and the telemetry suite pins exact lag
+            # values, so it is really asserting on tick positions. An extra
+            # call here would break assertions that have nothing to do with
+            # purging.
+            #
+            # Tied to commits because a commit is when the seen-set grows.
+            # Expired uids are already ignored by filter_unseen, so this
+            # reclaims rather than corrects; left undone the set grows for the
+            # life of the stream, and a tail never restarts to clear it.
+            # Allowed to raise: a store that cannot delete probably cannot
+            # commit either, and carrying on against a broken store quietly is
+            # the worse failure.
+            if batch_opened_at - last_purge_at >= purge_every_seconds:
+                last_purge_at = batch_opened_at
+                await store.purge_expired()
 
         if exhausted:
             break

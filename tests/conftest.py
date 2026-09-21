@@ -23,7 +23,7 @@ import pytest
 
 from ocsf_connector.state.memory import InMemoryStateStore
 from ocsf_connector.state.sqlite import SqliteStateStore
-from ocsf_connector.state.store import StateStore
+from ocsf_connector.state.store import ManagedStateStore
 
 
 class StoreHarness:
@@ -32,20 +32,20 @@ class StoreHarness:
     def __init__(self, kind: str, path: Path) -> None:
         self.kind = kind
         self.path = path
-        self._store: StateStore | None = None
+        self._store: ManagedStateStore | None = None
         self._kwargs: dict[str, Any] = {}
 
     @property
     def durable(self) -> bool:
         return self.kind == "sqlite"
 
-    def open(self, **kwargs: Any) -> StateStore:
+    def open(self, **kwargs: Any) -> ManagedStateStore:
         if self._store is None:
             self._kwargs = kwargs
             self._store = self._construct()
         return self._store
 
-    def reopen(self) -> StateStore:
+    def reopen(self) -> ManagedStateStore:
         """The same state, a fresh handle -- what a process restart looks like."""
         if self._store is None:
             return self.open()
@@ -58,12 +58,16 @@ class StoreHarness:
         return self._store
 
     def close(self) -> None:
+        # No isinstance: both implementations close, one of them by doing
+        # nothing. A type check here is a quiet admission that the seam does not
+        # cover what the suite needs, and the same check elsewhere was skipping
+        # a real assertion.
         store = self._store
-        if store is not None and isinstance(store, SqliteStateStore):
+        if store is not None:
             store.close()
         self._store = None
 
-    def _construct(self) -> StateStore:
+    def _construct(self) -> ManagedStateStore:
         if self.durable:
             return SqliteStateStore(self.path, **self._kwargs)
         return InMemoryStateStore(**self._kwargs)

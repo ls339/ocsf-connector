@@ -68,3 +68,49 @@ class StateStore(Protocol):
     async def record_published(self, stream: str, published_ms: int) -> None:
         """Observability only. Never read back to determine a resume point."""
         ...
+
+    async def purge_expired(self) -> int:
+        """Drop seen-set entries past their TTL. Returns how many were removed.
+
+        Here, in the runner's protocol, because the runner is what calls it.
+        Expired rows are already ignored by :meth:`filter_unseen`, so this
+        changes no behavior -- but nothing else reclaims them, and a tail does
+        not restart. Left uncalled, the seen-set grows for the life of the
+        stream at up to a thousand rows a page, with its index alongside.
+        """
+        ...
+
+
+class ManagedStateStore(StateStore, Protocol):
+    """What an *owner* of the store needs, beyond what the runner uses.
+
+    Kept separate deliberately. :class:`StateStore` is the runner's dependency
+    and names only what `runner/loop.py` actually calls; a single protocol
+    carrying everything would make the loop demand methods it never touches, and
+    would stop a wrapper that forwards the loop's surface -- like the crash
+    double in the test suite -- from satisfying it.
+
+    These belong to whoever owns the store's lifecycle: the composition root,
+    operational tooling, and the tests that hold both implementations to the
+    same promises. That last one is why they are a protocol at all rather than
+    an informal convention. Both implementations having them is what lets the
+    shared suite drop the ``isinstance`` checks it used to need, and an
+    assertion skipped by such a check is an assertion that never ran.
+    """
+
+    async def get_last_published(self, stream: str) -> int | None:
+        """Observability only. Never read back to determine a resume point."""
+        ...
+
+    def has_committed(self, stream: str) -> bool:
+        """Tell "range finished" from "never started" -- both of which read as a
+        ``None`` cursor (docs/SPEC.md §5.3)."""
+        ...
+
+    def close(self) -> None:
+        """Release whatever this implementation holds.
+
+        A no-op is a valid implementation: an in-memory store has nothing to
+        release, and an owner should not have to ask which kind it holds.
+        """
+        ...
