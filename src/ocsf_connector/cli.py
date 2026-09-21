@@ -20,7 +20,7 @@ from pydantic import ValidationError
 
 from ocsf_connector.config import Config, MissingConfig, load_config
 from ocsf_connector.runner.loop import RunStats
-from ocsf_connector.runner.modes import backfill, tail
+from ocsf_connector.runner.modes import ColdStartRefused, backfill, tail
 
 DEFAULT_CONFIG = Path("config.toml")
 
@@ -56,13 +56,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     modes = parser.add_subparsers(dest="command", required=True)
 
-    modes.add_parser(
+    following = modes.add_parser(
         "tail",
         help="follow the stream forever, resuming from the committed cursor",
         description=(
             "Follows Okta's polling query and never exits on its own. The opening "
             "bound comes from the configuration file, deliberately: computing it "
             "at startup breaks replay after a crash before the first commit."
+        ),
+    )
+    # Not the camel's nose for --since. This flag cannot choose a bound; it only
+    # admits that there is no cursor to resume from, and the bound it then opens
+    # at still comes from configuration. The rule in this module's docstring is
+    # intact.
+    following.add_argument(
+        "--from-scratch",
+        action="store_true",
+        help=(
+            "start from okta.since because there is genuinely nothing to resume. "
+            "Required on a first run; refuse to use it to paper over a state "
+            "database the connector cannot find"
         ),
     )
 
@@ -98,10 +111,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     # later, and so a shell redirect of results does not swallow the one line
     # that says whether anything happened.
     destination = f"{config.okta.org_url} -> {config.sink.directory}"
+    # Which state database is in use decides whether a run resumes or starts
+    # over, and it was previously unanswerable from the outside. The path is
+    # absolute by the time it gets here (config.StateConfig).
+    print(f"state: {config.state.database}", file=sys.stderr)
     try:
         if args.command == "tail":
             print(f"tailing {destination} (Ctrl-C to stop)", file=sys.stderr)
-            stats = asyncio.run(tail(config))
+            stats = asyncio.run(tail(config, from_scratch=args.from_scratch))
         else:
             print(f"backfilling {args.since} .. {args.until} {destination}", file=sys.stderr)
             stats = asyncio.run(backfill(config, since=args.since, until=args.until))
@@ -109,6 +126,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         # A setting this mode needs, not a runtime failure -- so it exits 2 with
         # the other configuration problems rather than 1.
         print(f"configuration error in {args.config}: {exc}", file=sys.stderr)
+        return 2
+    except ColdStartRefused as exc:
+        # Deliberately not borrowing the "configuration error" wording: the file
+        # is fine, the state is not, and sending an operator to edit the config
+        # would be sending them to the wrong place. Still exit 2 -- nothing ran,
+        # and something has to be fixed before anything will.
+        print(f"refusing to start: {exc}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
         # Tail never returns on its own, so this is its normal exit. The cursor

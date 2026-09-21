@@ -25,7 +25,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 ENV_OVERRIDES: dict[str, tuple[str, ...]] = {
     "OCSF_OKTA_ORG_URL": ("okta", "org_url"),
@@ -108,8 +108,39 @@ class SinkConfig(Strict):
 
 
 class StateConfig(Strict):
-    database: Path = Path("state/ocsf-connector.db")
+    database: Path = Field(default=Path("state/ocsf-connector.db"), validate_default=True)
+    """``validate_default`` because the default is the case that matters.
+
+    pydantic skips validators on defaults unless asked, and the relative default
+    is precisely the value that causes the trouble -- an operator who sets this
+    explicitly has usually typed an absolute path already. Without the flag the
+    pinning below would run only for configurations that did not need it.
+    """
     ttl_hours: float = Field(default=24.0, gt=0)
+
+    @field_validator("database")
+    @classmethod
+    def _absolute(cls, value: Path) -> Path:
+        """Pin the path at load time.
+
+        Be clear about what this does and does not buy. It does **not** decide
+        which database is opened: a relative path resolves against the same
+        working directory either way. What it buys is that the path the
+        connector reports is the path it used, so "which state was I resuming
+        from" has an answer that survives being pasted into an issue.
+
+        The guard that actually prevents silent re-ingestion is tail's refusal
+        to cold-start without being told
+        (:class:`~ocsf_connector.runner.modes.ColdStartRefused`). Losing the
+        cursor by running from another directory is only one way to lose it;
+        deleting the file or restoring a stale backup look identical from here.
+
+        ``abspath`` rather than ``resolve``: symlinks stay unfollowed on
+        purpose. An operator who configures ``/var/lib/ocsf`` should see that
+        path echoed back, not the ``/private/var/...`` it happens to point at on
+        macOS. The goal is an answer they recognize, not a canonical one.
+        """
+        return Path(os.path.abspath(value.expanduser()))
 
 
 class TelemetryConfig(Strict):
@@ -121,8 +152,13 @@ class TelemetryConfig(Strict):
 class Config(Strict):
     okta: OktaConfig
     sink: SinkConfig
-    state: StateConfig = StateConfig()
-    telemetry: TelemetryConfig = TelemetryConfig()
+    # Factories, not instances: a bare ``StateConfig()`` here is built once when
+    # this module is imported, which would pin the database path against
+    # whatever directory the *import* happened in rather than the one the
+    # configuration was loaded in. Identical in practice, wrong in principle,
+    # and the kind of thing that stops being identical inside a test runner.
+    state: StateConfig = Field(default_factory=StateConfig)
+    telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     stream: str | None = None
     """Overrides the per-mode default. Tail and backfill must not share one:
     the store is keyed by stream, so they would fight over a single cursor."""

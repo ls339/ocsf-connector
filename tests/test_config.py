@@ -45,7 +45,9 @@ def test_a_minimal_file_loads_with_sensible_defaults(tmp_path: Path) -> None:
     assert config.okta.limit == 1000, "Okta's ceiling, and the throughput ceiling (§2.3)"
     assert config.okta.dpop_key_file is None, "DPoP is opt-in by naming its key"
     assert config.sink.kind == "local"
-    assert config.state.database == Path("state/ocsf-connector.db")
+    assert config.state.database == Path("state/ocsf-connector.db").absolute(), (
+        "the default is still relative in the file, but absolute by the time anything reads it"
+    )
     assert config.telemetry.enabled is False, "no observability stack required to run (§7)"
     assert config.stream is None, "so each mode uses its own default"
 
@@ -110,6 +112,58 @@ def test_a_boolean_override_is_not_merely_a_non_empty_string(tmp_path: Path) -> 
 
 
 def test_an_override_can_create_a_section_the_file_omits(tmp_path: Path) -> None:
+    config = load_config(
+        write(tmp_path, MINIMAL), env={"OCSF_STATE_DATABASE": "/var/lib/ocsf/state.db"}
+    )
+
+    assert config.state.database == Path("/var/lib/ocsf/state.db")
+
+
+def test_a_relative_database_path_is_pinned_at_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Which database is opened decides whether a run resumes or starts over, and
+    a relative path makes the working directory the thing that decides.
+
+    Pinning it does not change *which* file is opened -- it resolves against the
+    same directory either way. What it buys is that the path the connector
+    reports is the path it used. The guard that actually prevents silent
+    re-ingestion is tail's refusal to cold-start (tests/test_cli.py).
+    """
+    monkeypatch.chdir(tmp_path)
+    body = MINIMAL + '\n[state]\ndatabase = "state/ocsf-connector.db"\n'
+
+    config = load_config(write(tmp_path, body), env={})
+
+    # Against cwd rather than tmp_path: abspath resolves through os.getcwd(),
+    # which macOS reports symlink-free, so tmp_path itself may not compare equal.
+    assert config.state.database.is_absolute()
+    assert config.state.database == Path.cwd() / "state" / "ocsf-connector.db"
+
+
+def test_the_default_is_built_at_load_not_at_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file with no [state] section still pins against the loading directory.
+
+    This is the only place the distinction shows. A bare ``StateConfig()`` as
+    the field default is constructed once, when the module is imported, so its
+    path would pin against whatever directory the interpreter started in --
+    which under a service manager or a test runner is not the directory the
+    operator ran from. Every other test here happens to import and load from the
+    same place, so none of them can tell the two apart.
+    """
+    monkeypatch.chdir(tmp_path)
+
+    config = load_config(write(tmp_path, MINIMAL), env={})
+
+    assert config.state.database == Path.cwd() / "state" / "ocsf-connector.db"
+
+
+def test_pinning_does_not_rewrite_the_path_an_operator_wrote(tmp_path: Path) -> None:
+    """abspath, not resolve. On macOS /var is a symlink to /private/var, so
+    resolving would echo back a path the operator never typed and would have to
+    translate before believing it."""
     config = load_config(
         write(tmp_path, MINIMAL), env={"OCSF_STATE_DATABASE": "/var/lib/ocsf/state.db"}
     )

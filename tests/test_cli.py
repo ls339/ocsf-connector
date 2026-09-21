@@ -10,17 +10,21 @@ Synthetic throughout (CLAUDE.md invariant 5).
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
 
 import ocsf_connector.cli as cli_module
+import ocsf_connector.runner.modes as modes_module
 from ocsf_connector.cli import build_parser, main, summarise
 from ocsf_connector.config import load_config
 from ocsf_connector.runner.loop import RunStats
 from ocsf_connector.runner.modes import BACKFILL_STREAM, TAIL_STREAM, assemble
 from ocsf_connector.sources.okta.auth import BearerAuth, DpopAuth
+from ocsf_connector.state.sqlite import SqliteStateStore
 from ocsf_connector.telemetry.base import NullMetrics
 from ocsf_connector.telemetry.otel import OtelMetrics
 from tests.test_config import MINIMAL, write
@@ -204,7 +208,7 @@ def test_stopping_a_tail_is_not_a_failure(
     """Tail never returns on its own, so Ctrl-C is how it ends. The cursor is
     committed after every acknowledged batch, so nothing is lost (§5)."""
 
-    async def interrupted(config: object) -> RunStats:
+    async def interrupted(config: object, *, from_scratch: bool = False) -> RunStats:
         raise KeyboardInterrupt
 
     monkeypatch.setattr(cli_module, "tail", interrupted)
@@ -213,6 +217,105 @@ def test_stopping_a_tail_is_not_a_failure(
 
     assert code == 130
     assert "interrupted" in capsys.readouterr().err
+
+
+# --- refusing to start on state that is not there ----------------------------
+
+
+def test_tail_accepts_a_from_scratch_flag() -> None:
+    """Not a `--since` in disguise: it cannot choose a bound, only admit that
+    there is no cursor. The bound still comes from configuration."""
+    args = build_parser().parse_args(["tail", "--from-scratch"])
+
+    assert args.from_scratch is True
+    assert not hasattr(args, "since"), "tail still takes no time bounds (§5.2)"
+
+
+def test_tail_does_not_mistake_lost_state_for_a_first_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An empty database and a genuine first run look identical from inside.
+
+    Nothing below can tell them apart either: assemble() creates the state
+    directory wherever the process was launched, and SQLite creates the file on
+    connect, so neither layer can raise. Left alone the runner would open from
+    okta.since and re-ingest everything since that bound in silence.
+    """
+    code = main(["--config", str(config_with_keys(tmp_path)), "tail"])
+
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "--from-scratch" in err, "and says how to proceed if it really is the first run"
+    assert "configuration error" not in err, (
+        "the config file is fine and the state is not -- saying otherwise sends "
+        "an operator to edit the wrong thing"
+    )
+
+
+def test_from_scratch_lets_a_genuine_first_run_proceed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def fake_run(**kwargs: Any) -> RunStats:
+        return RunStats(pages=1, written=3)
+
+    monkeypatch.setattr(modes_module, "run", fake_run)
+
+    code = main(["--config", str(config_with_keys(tmp_path)), "tail", "--from-scratch"])
+
+    assert code == 0
+    assert "3 events written" in capsys.readouterr().err
+
+
+def test_tail_resumes_without_the_flag_once_a_cursor_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The flag is for the first run, not something to type forever. A steady
+    state that needed it would train operators to pass it always, which would
+    put the silent re-ingestion right back."""
+    config_path = config_with_keys(tmp_path)
+
+    async def seed() -> None:
+        store = SqliteStateStore(tmp_path / "state.db")
+        try:
+            await store.commit(TAIL_STREAM, "c1", [], "okta-test")
+        finally:
+            store.close()
+
+    asyncio.run(seed())
+
+    async def fake_run(**kwargs: Any) -> RunStats:
+        return RunStats(pages=1, written=1)
+
+    monkeypatch.setattr(modes_module, "run", fake_run)
+
+    assert main(["--config", str(config_path), "tail"]) == 0
+
+
+def test_the_run_says_which_state_database_it_is_using(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Which database is in use decides whether a run resumes or starts over,
+    and it used to be unanswerable from outside -- which is how the working
+    directory got to decide it unnoticed."""
+
+    async def fake_backfill(config: object, *, since: str, until: str) -> RunStats:
+        return RunStats(pages=1, exhausted=True)
+
+    monkeypatch.setattr(cli_module, "backfill", fake_backfill)
+
+    main(
+        [
+            "--config",
+            str(config_with_keys(tmp_path)),
+            "backfill",
+            "--since",
+            "2026-09-01T00:00:00Z",
+            "--until",
+            "2026-09-02T00:00:00Z",
+        ]
+    )
+
+    assert f"state: {tmp_path / 'state.db'}" in capsys.readouterr().err
 
 
 # --- the composition root ---------------------------------------------------

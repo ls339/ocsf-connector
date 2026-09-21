@@ -54,7 +54,17 @@ region = "us-east-1"
 account_id = "external_your-okta-org-id"
 
 [state]
-# The cursor and the dedup set. Losing this file means re-ingesting from `since`.
+# The cursor and the dedup set.
+#
+# Losing this file means re-ingesting from `since`, so tail refuses to start
+# when it finds no cursor rather than assuming a first run -- an empty database
+# and a genuine first run are indistinguishable from the inside. Pass
+# --from-scratch once to say the first run is real.
+#
+# A relative path resolves against the working directory, which would otherwise
+# let the directory you launch from decide whether a run resumes or starts over.
+# It is pinned to an absolute path when the config loads and echoed back at
+# startup, but prefer writing an absolute one here.
 database = "state/ocsf-connector.db"
 
 # How long a delivered event id is remembered, to absorb duplicates Okta itself

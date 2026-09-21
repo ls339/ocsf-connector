@@ -682,6 +682,28 @@ with the end of a closed range. The entry points default to `okta-tail` and
 *not* per stream, which is what keeps the overlap harmless where a backfill range
 meets the tail (§5.2).
 
+**An empty state store is not evidence of a first run.** Tail resumes from the
+stored cursor, and with none it opens from `since` — so a lost store silently
+re-ingests everything from that bound. Nothing below the mode entry point can
+notice: `assemble` creates the state directory wherever the process was
+launched, and SQLite creates the file on connect, so neither layer is able to
+raise. Tail therefore refuses to start when its stream has no cursor, and
+`--from-scratch` is how an operator states that the first run is genuine. The
+guard is on the *absence of a cursor* rather than on the path, because the
+working directory is only one way to lose the store — deleting the file or
+restoring a stale backup are indistinguishable from it. The configured path is
+pinned absolute when the configuration loads and echoed at startup, so which
+store a run used is answerable afterwards.
+
+The idempotent object write (§4.1) blunts the consequence without removing it: a
+re-run reproduces the first batch's opening cursor, hashes to the same key, and
+overwrites that object rather than adding one. Later batches do not survive the
+comparison — they are cut by elapsed time and buffer size, so on a later run the
+pages fill at different rates and split at different points, producing keys that
+never existed before and objects that land beside the originals instead of over
+them. Backfill needs no equivalent guard: its bounds are already explicit
+arguments rather than recovered state.
+
 **The command line enforces what the runner cannot.** `ocsf-connector tail` takes
 no time bounds at all, because the opening `since` comes from configuration and a
 flag invites `--since $(date)` — the moving opening cursor §5.2 exists to prevent.

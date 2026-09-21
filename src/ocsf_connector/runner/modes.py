@@ -41,6 +41,22 @@ TAIL_STREAM = "okta-tail"
 BACKFILL_STREAM = "okta-backfill"
 
 
+class ColdStartRefused(RuntimeError):
+    """Tail has no cursor to resume from and was not told to start fresh.
+
+    The connector cannot tell a genuine first run from a lost one: an empty
+    database is what both look like. ``mkdir(parents=True, exist_ok=True)``
+    below happily creates a state directory wherever the process was launched,
+    and SQLite creates the file on connect, so neither layer can raise. Left to
+    itself the runner would call ``start`` and open from ``okta.since``,
+    re-ingesting everything since that bound without a word.
+
+    Rather than guess, tail refuses and asks. ``--from-scratch`` is how an
+    operator says "yes, there is genuinely nothing to resume". Backfill needs no
+    such guard: its bounds are already explicit on the command line.
+    """
+
+
 @dataclass(slots=True)
 class Assembled:
     """The parts, wired together and ready to run."""
@@ -107,7 +123,7 @@ def assemble(config: Config, client: httpx.AsyncClient) -> Assembled:
     )
 
 
-async def tail(config: Config) -> RunStats:
+async def tail(config: Config, *, from_scratch: bool = False) -> RunStats:
     """Follow the stream forever, sleeping when caught up.
 
     Never returns on its own: a polling query always carries a next link, so an
@@ -117,6 +133,10 @@ async def tail(config: Config) -> RunStats:
     the obligation §5.2 places on the mode entry point, and it is checked here
     rather than defaulted anywhere: the connector would rather refuse to start
     than invent a bound whose value changes between restarts.
+
+    Raises :class:`ColdStartRefused` when the stream has no committed cursor and
+    ``from_scratch`` was not set -- the same instinct applied to state rather
+    than to configuration.
     """
     if config.okta.since is None:
         raise MissingConfig(
@@ -125,15 +145,28 @@ async def tail(config: Config) -> RunStats:
         )
 
     since = config.okta.since
+    stream = config.stream or TAIL_STREAM
     async with httpx.AsyncClient() as client:
         parts = assemble(config, client)
         try:
+            # Checked after assembling, because assembling is what opens (and
+            # creates) the database: asking first would report "no cursor" for a
+            # file that does not exist yet, which is a different problem.
+            if not from_scratch and await parts.store.get_cursor(stream) is None:
+                raise ColdStartRefused(
+                    f"no committed cursor for stream {stream!r} in "
+                    f"{config.state.database}. Tail resumes from the cursor, and with "
+                    "none it would open from okta.since and re-ingest everything since "
+                    "that bound. Pass --from-scratch if this is genuinely the first run; "
+                    "otherwise the connector is pointed at the wrong state database "
+                    "(SPEC §5.2)"
+                )
             return await run(
                 source=parts.source,
                 mapper=parts.mapper,
                 sink=parts.sink,
                 store=parts.store,
-                stream=config.stream or TAIL_STREAM,
+                stream=stream,
                 # From configuration, never now(). See §5.2 and this module's
                 # docstring -- the runner cannot check this for us.
                 start=lambda: parts.source.start_tail(since),
