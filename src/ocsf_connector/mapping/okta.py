@@ -24,10 +24,11 @@ from __future__ import annotations
 
 import copy
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import yaml
@@ -86,6 +87,29 @@ class OktaOcsfMapper:
         self._events = {
             str(name): _entry(value, name) for name, value in (table.get("events") or {}).items()
         }
+
+    def event_rules(self) -> Mapping[str, tuple[int, int]]:
+        """What the table maps each event type to, as ``(class_uid, activity_id)``.
+
+        A read-only view over the loaded table, for tests and for anyone asking
+        what this connector knows how to classify. It exists so that nothing
+        outside this class has to reach for ``_events``: three tests did, which
+        made the table's internal entry shape -- a plain dict today -- part of
+        the contract by accident. Changing it to something typed would have
+        broken those tests and, worse, moved the digest in
+        ``test_the_table_version_moves_with_the_table``, reporting "the mapping
+        table changed" about a refactor that changed no mapping at all. That
+        test's whole job is to be a true alarm.
+
+        Returns primitives for the same reason: a caller that can only see two
+        integers cannot come to depend on how they are stored.
+        """
+        return MappingProxyType(
+            {
+                name: (entry["class_uid"], entry["activity_id"])
+                for name, entry in self._events.items()
+            }
+        )
 
     def map(self, record: dict[str, Any]) -> OcsfEvent:
         """Normalize one Okta record. Total: every path returns an event."""

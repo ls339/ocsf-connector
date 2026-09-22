@@ -252,7 +252,12 @@ def test_no_event_carries_an_attribute_its_class_does_not_define(
 ) -> None:
     """The whole reason the per-class sets exist: Entity Management has no user,
     only Authentication has service/session/is_mfa."""
-    for event_type in [*mapper._events, "user.unknown.thing"]:
+    rules = mapper.event_rules()
+    # A loop over an empty table passes without running its body, which is the
+    # failure mode this project has already been bitten by twice. One known
+    # entry proves the loop ran; the table's size is the version pin's job.
+    assert "user.session.start" in rules
+    for event_type in [*rules, "user.unknown.thing"]:
         event = mapper.map(record(eventType=event_type))
         allowed = BASE_ATTRIBUTES | CLASS_ATTRIBUTES[event.class_uid]
         assert set(event.body) <= allowed, f"{event_type} emitted {set(event.body) - allowed}"
@@ -261,7 +266,9 @@ def test_no_event_carries_an_attribute_its_class_does_not_define(
 def test_required_objects_are_always_present(mapper: OktaOcsfMapper) -> None:
     """A record missing a required object is invalid for its class, so a thin
     placeholder beats omission."""
-    for event_type in mapper._events:
+    rules = mapper.event_rules()
+    assert "user.session.start" in rules  # not a vacuous loop -- see above
+    for event_type in rules:
         event = mapper.map({"eventType": event_type})
         for name in REQUIRED_OBJECTS[event.class_uid]:
             assert event.body.get(name), f"{event_type} has no {name}"
@@ -351,7 +358,8 @@ def test_the_table_version_moves_with_the_table() -> None:
     """
     mapper = OktaOcsfMapper()
     entries = sorted(
-        (name, entry["class_uid"], entry["activity_id"]) for name, entry in mapper._events.items()
+        (name, class_uid, activity_id)
+        for name, (class_uid, activity_id) in mapper.event_rules().items()
     )
     digest = hashlib.sha256(repr(entries).encode()).hexdigest()[:12]
 
@@ -363,9 +371,9 @@ def test_the_table_version_moves_with_the_table() -> None:
 
 def test_every_table_entry_is_legal_in_ocsf_1_3_0(mapper: OktaOcsfMapper) -> None:
     """Checked at load time; asserted here so the guard itself is covered."""
-    for event_type, entry in mapper._events.items():
-        allowed = ACTIVITY_IDS[entry["class_uid"]]
-        assert entry["activity_id"] in allowed, f"{event_type} is not legal in 1.3.0"
+    for event_type, (class_uid, activity_id) in mapper.event_rules().items():
+        allowed = ACTIVITY_IDS[class_uid]
+        assert activity_id in allowed, f"{event_type} is not legal in 1.3.0"
 
 
 @pytest.mark.parametrize(
