@@ -13,6 +13,13 @@ them:
 know how ``start`` computed its answer (§5.2), so the rule that it must not be
 ``now()`` lives here -- satisfied by `config.okta.since` having no default.
 
+**Signals are handled here, not in the runner.** Both modes install the same
+shutdown for SIGINT and SIGTERM (`runner/shutdown.py`) around the run, because
+this is the layer that owns the process: the runner is a function and may be
+called by something that has its own idea about signals. Backfill gets it too
+-- the CLI names a Job as its deployment shape, and a Job is stopped the same
+way a long-running container is.
+
 **The two modes must not share a stream name.** The state store is keyed by
 stream, so a backfill sharing tail's name would overwrite tail's cursor. They
 default to different names. The dedup seen-set is deliberately *not* per stream,
@@ -21,7 +28,7 @@ which is what keeps the overlap safe where a backfill range meets the tail.
 
 from __future__ import annotations
 
-import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import httpx
@@ -29,6 +36,7 @@ import httpx
 from ocsf_connector.config import Config, MissingConfig
 from ocsf_connector.mapping.okta import OktaOcsfMapper
 from ocsf_connector.runner.loop import RunStats, run
+from ocsf_connector.runner.shutdown import stop_on_signals
 from ocsf_connector.sinks.objects import LocalObjectStore
 from ocsf_connector.sinks.security_lake import SecurityLakeSink
 from ocsf_connector.sources.okta.auth import BearerAuth, DpopAuth, OktaClientCredentials
@@ -123,7 +131,12 @@ def assemble(config: Config, client: httpx.AsyncClient) -> Assembled:
     )
 
 
-async def tail(config: Config, *, from_scratch: bool = False) -> RunStats:
+async def tail(
+    config: Config,
+    *,
+    from_scratch: bool = False,
+    on_progress: Callable[[RunStats], None] | None = None,
+) -> RunStats:
     """Follow the stream forever, sleeping when caught up.
 
     Never returns on its own: a polling query always carries a next link, so an
@@ -137,6 +150,10 @@ async def tail(config: Config, *, from_scratch: bool = False) -> RunStats:
     Raises :class:`ColdStartRefused` when the stream has no committed cursor and
     ``from_scratch`` was not set -- the same instinct applied to state rather
     than to configuration.
+
+    Returns when a signal asks it to, carrying ``stopped_by``. Idling is done by
+    the shutdown rather than by ``asyncio.sleep`` so that a stop arriving mid
+    sleep is acted on immediately instead of at the end of the poll interval.
     """
     if config.okta.since is None:
         raise MissingConfig(
@@ -161,23 +178,32 @@ async def tail(config: Config, *, from_scratch: bool = False) -> RunStats:
                     "otherwise the connector is pointed at the wrong state database "
                     "(SPEC §5.2)"
                 )
-            return await run(
-                source=parts.source,
-                mapper=parts.mapper,
-                sink=parts.sink,
-                store=parts.store,
-                stream=stream,
-                # From configuration, never now(). See §5.2 and this module's
-                # docstring -- the runner cannot check this for us.
-                start=lambda: parts.source.start_tail(since),
-                on_idle=lambda: asyncio.sleep(config.okta.poll_seconds),
-                metrics=parts.metrics,
-            )
+            async with stop_on_signals() as shutdown:
+                return await run(
+                    source=parts.source,
+                    mapper=parts.mapper,
+                    sink=parts.sink,
+                    store=parts.store,
+                    stream=stream,
+                    # From configuration, never now(). See §5.2 and this
+                    # module's docstring -- the runner cannot check this for us.
+                    start=lambda: parts.source.start_tail(since),
+                    on_idle=lambda: shutdown.sleep(config.okta.poll_seconds),
+                    stop_signal=shutdown.requested,
+                    on_progress=on_progress,
+                    metrics=parts.metrics,
+                )
         finally:
             parts.close()
 
 
-async def backfill(config: Config, *, since: str, until: str) -> RunStats:
+async def backfill(
+    config: Config,
+    *,
+    since: str,
+    until: str,
+    on_progress: Callable[[RunStats], None] | None = None,
+) -> RunStats:
     """Walk a closed range and stop when Okta stops offering a next link (§2.2).
 
     Both bounds are arguments rather than configuration: a backfill is a
@@ -187,14 +213,17 @@ async def backfill(config: Config, *, since: str, until: str) -> RunStats:
     async with httpx.AsyncClient() as client:
         parts = assemble(config, client)
         try:
-            return await run(
-                source=parts.source,
-                mapper=parts.mapper,
-                sink=parts.sink,
-                store=parts.store,
-                stream=config.stream or BACKFILL_STREAM,
-                start=lambda: parts.source.start_backfill(since, until),
-                metrics=parts.metrics,
-            )
+            async with stop_on_signals() as shutdown:
+                return await run(
+                    source=parts.source,
+                    mapper=parts.mapper,
+                    sink=parts.sink,
+                    store=parts.store,
+                    stream=config.stream or BACKFILL_STREAM,
+                    start=lambda: parts.source.start_backfill(since, until),
+                    stop_signal=shutdown.requested,
+                    on_progress=on_progress,
+                    metrics=parts.metrics,
+                )
         finally:
             parts.close()

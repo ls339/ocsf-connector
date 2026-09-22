@@ -79,13 +79,19 @@ walks a closed range and exits. They run under different stream names on purpose
 so a backfill cannot overwrite the tail's resume position, and they share the dedup
 set, so the overlap where a backfill meets the tail does not duplicate events.
 
+Either mode stops on `SIGINT` (Ctrl-C) or `SIGTERM` (what a container runtime
+sends): it finishes the page it is on, prints what the run did, and exits 130 or
+143. A second signal cancels instead of waiting. A tail also prints one `alive:`
+line every five minutes, because a healthy idle tail commits nothing and would
+otherwise be indistinguishable from a wedged one.
+
 Secrets are named, never stored: the config file holds a *path* to the PEM private
 key. Any setting can be overridden from the environment — the full list of
 variables is one table in `src/ocsf_connector/config.py`.
 
 **What does not work yet.** The sink writes Parquet to a local directory. Nothing
-delivers to S3 or registers the Security Lake custom sources, and nothing here has
-run against a live Okta org.
+delivers to S3 or registers the Security Lake custom sources. The source, auth
+and tail paths have run against a live org; the sink has not.
 
 ## Design
 

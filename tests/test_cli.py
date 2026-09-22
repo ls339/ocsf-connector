@@ -11,6 +11,8 @@ Synthetic throughout (CLAUDE.md invariant 5).
 from __future__ import annotations
 
 import asyncio
+import io
+import signal
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +21,7 @@ import pytest
 
 import ocsf_connector.cli as cli_module
 import ocsf_connector.runner.modes as modes_module
-from ocsf_connector.cli import build_parser, main, summarise
+from ocsf_connector.cli import build_parser, liveness, main, summarise
 from ocsf_connector.config import load_config
 from ocsf_connector.runner.loop import RunStats
 from ocsf_connector.runner.modes import BACKFILL_STREAM, TAIL_STREAM, assemble
@@ -133,7 +135,7 @@ def test_backfill_needs_no_configured_since(
     without = config_with_keys(tmp_path, MINIMAL.replace('since = "2026-09-01T00:00:00Z"\n', ""))
     seen: dict[str, str] = {}
 
-    async def fake_backfill(config: object, *, since: str, until: str) -> RunStats:
+    async def fake_backfill(config: object, *, since: str, until: str, **rest: Any) -> RunStats:
         seen.update(since=since, until=until)
         return RunStats(pages=1, exhausted=True)
 
@@ -178,7 +180,7 @@ def test_a_completed_run_prints_its_summary(
 ) -> None:
     config_path = config_with_keys(tmp_path)
 
-    async def fake_backfill(config: object, *, since: str, until: str) -> RunStats:
+    async def fake_backfill(config: object, *, since: str, until: str, **rest: Any) -> RunStats:
         return RunStats(pages=2, mapped=5, written=5, commits=2, exhausted=True)
 
     monkeypatch.setattr(cli_module, "backfill", fake_backfill)
@@ -202,13 +204,54 @@ def test_a_completed_run_prints_its_summary(
     assert "range complete" in err
 
 
+def test_a_stopped_run_reports_what_it_did_and_which_signal_stopped_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The bug: tail's only exit was an interrupt raised through whatever await
+    was running, so the mode that runs long enough to need a summary was the one
+    mode that could never print one. It now returns its stats instead."""
+
+    async def stopped(config: object, *, from_scratch: bool = False, **rest: Any) -> RunStats:
+        return RunStats(pages=97, mapped=40, written=38, commits=6, stopped_by=signal.SIGTERM)
+
+    monkeypatch.setattr(cli_module, "tail", stopped)
+
+    code = main(["--config", str(config_with_keys(tmp_path)), "tail"])
+
+    err = capsys.readouterr().err
+    assert code == 143, "128+SIGTERM: a supervisor asked, and nothing fell over"
+    assert "97 pages" in err and "38 events written" in err
+    assert "stopped on SIGTERM" in err
+
+
+def test_a_tail_stopped_by_ctrl_c_exits_130(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Which signal stopped it survives to the exit code, because that is the
+    difference between a deploy and an outage on whatever is watching."""
+
+    async def stopped(config: object, *, from_scratch: bool = False, **rest: Any) -> RunStats:
+        return RunStats(pages=4, stopped_by=signal.SIGINT)
+
+    monkeypatch.setattr(cli_module, "tail", stopped)
+
+    assert main(["--config", str(config_with_keys(tmp_path)), "tail"]) == 130
+    assert "stopped on SIGINT" in capsys.readouterr().err
+
+
+def test_a_run_that_was_not_stopped_says_nothing_about_signals() -> None:
+    assert "stopped on" not in summarise(RunStats(pages=2, exhausted=True))
+
+
 def test_stopping_a_tail_is_not_a_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Tail never returns on its own, so Ctrl-C is how it ends. The cursor is
-    committed after every acknowledged batch, so nothing is lost (§5)."""
+    """The escape hatch, not the ordinary path any more: a signal arriving
+    outside the window the handler covers, or a second one, which cancels rather
+    than waiting for the page in flight. The cursor is committed after every
+    acknowledged batch, so nothing is lost either way (§5)."""
 
-    async def interrupted(config: object, *, from_scratch: bool = False) -> RunStats:
+    async def interrupted(config: object, *, from_scratch: bool = False, **rest: Any) -> RunStats:
         raise KeyboardInterrupt
 
     monkeypatch.setattr(cli_module, "tail", interrupted)
@@ -217,6 +260,93 @@ def test_stopping_a_tail_is_not_a_failure(
 
     assert code == 130
     assert "interrupted" in capsys.readouterr().err
+
+
+# --- saying it is alive ------------------------------------------------------
+
+
+def test_the_liveness_line_is_throttled_to_one_per_interval() -> None:
+    """A tail polling every ten seconds would otherwise print six lines a
+    minute, which is how an operator learns to pipe the thing to /dev/null."""
+    ticks = iter([0.0, 10.0, 20.0, 61.0, 70.0, 130.0])
+    out = io.StringIO()
+    report = liveness(every_seconds=60.0, clock=lambda: next(ticks), out=out)
+
+    for pages in (1, 2, 3, 4, 5):
+        report(RunStats(pages=pages))
+
+    assert out.getvalue().splitlines() == [
+        "alive: 3 pages, 0 events written, 0 duplicates skipped, 0 commits",
+        "alive: 5 pages, 0 events written, 0 duplicates skipped, 0 commits",
+    ]
+
+
+def test_the_liveness_line_says_the_run_is_still_polling() -> None:
+    """Pages climbing with nothing written is the healthy idle tail §7
+    describes: it commits nothing, so nothing else it emits moves."""
+    out = io.StringIO()
+    report = liveness(every_seconds=0.0, clock=lambda: 0.0, out=out)
+
+    report(RunStats(pages=42, written=0, commits=0))
+
+    assert out.getvalue().startswith("alive: 42 pages")
+
+
+def test_a_tail_is_handed_the_liveness_reporter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The wire, not the pieces. Both ends are tested above -- the runner reports
+    every page, the throttle prints at most one line per interval -- and a tail
+    that was never handed a reporter would still pass both of them and go silent
+    for as long as it ran, which is the bug.
+
+    The interval is turned off here because the point is the connection, not the
+    pacing; left at five minutes this would assert nothing for five minutes.
+    """
+    monkeypatch.setattr(cli_module, "LIVENESS_SECONDS", 0.0)
+
+    async def fake_tail(
+        config: object, *, from_scratch: bool = False, on_progress: Any = None, **rest: Any
+    ) -> RunStats:
+        assert on_progress is not None, "a tail with no reporter says nothing until it dies"
+        on_progress(RunStats(pages=11, written=4, commits=2))
+        return RunStats(pages=11, written=4, commits=2, stopped_by=signal.SIGINT)
+
+    monkeypatch.setattr(cli_module, "tail", fake_tail)
+
+    main(["--config", str(config_with_keys(tmp_path)), "tail"])
+
+    assert "alive: 11 pages, 4 events written" in capsys.readouterr().err
+
+
+def test_a_backfill_is_handed_one_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A backfill of a long range is just as quiet, and just as long."""
+    monkeypatch.setattr(cli_module, "LIVENESS_SECONDS", 0.0)
+
+    async def fake_backfill(
+        config: object, *, since: str, until: str, on_progress: Any = None, **rest: Any
+    ) -> RunStats:
+        assert on_progress is not None
+        on_progress(RunStats(pages=7, written=700))
+        return RunStats(pages=7, written=700, exhausted=True)
+
+    monkeypatch.setattr(cli_module, "backfill", fake_backfill)
+
+    main(
+        [
+            "--config",
+            str(config_with_keys(tmp_path)),
+            "backfill",
+            "--since",
+            "2026-09-01T00:00:00Z",
+            "--until",
+            "2026-09-02T00:00:00Z",
+        ]
+    )
+
+    assert "alive: 7 pages, 700 events written" in capsys.readouterr().err
 
 
 # --- refusing to start on state that is not there ----------------------------
@@ -298,7 +428,7 @@ def test_the_run_says_which_state_database_it_is_using(
     and it used to be unanswerable from outside -- which is how the working
     directory got to decide it unnoticed."""
 
-    async def fake_backfill(config: object, *, since: str, until: str) -> RunStats:
+    async def fake_backfill(config: object, *, since: str, until: str, **rest: Any) -> RunStats:
         return RunStats(pages=1, exhausted=True)
 
     monkeypatch.setattr(cli_module, "backfill", fake_backfill)

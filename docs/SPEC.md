@@ -752,6 +752,34 @@ never existed before and objects that land beside the originals instead of over
 them. Backfill needs no equivalent guard: its bounds are already explicit
 arguments rather than recovered state.
 
+**Stopping a tail is part of the mode, not an accident.** A polling query never
+ends (§2.2), so every tail run ends by being stopped — which makes shutdown
+ordinary behavior with ordinary requirements. Both modes install one handler for
+`SIGINT` and `SIGTERM`; backfill gets it too, because the deployment shape named
+above is a Job, and a Job is stopped the same way a long-running container is.
+
+A signal sets a flag the loop reads *between pages* rather than raising through
+whichever `await` was running. That is what lets the run return what it did:
+before, an interrupt unwound the frame that held the counters, so the mode that
+runs long enough to want a summary was the only one that could never print one.
+The page in flight when the signal arrives is finished first — it is already
+fetched, and committing it is cheaper than replaying it — and the run then
+returns, carrying the signal number. The CLI exits `128+n`: 130 for SIGINT, 143
+for SIGTERM, which is how a supervisor tells "asked to stop" from "fell over".
+
+**A stop does not flush the open batch.** The cursor moves only after an
+acknowledged flush (§5), so whatever is buffered replays from the committed
+cursor on the next start — the path a kill already takes, verified live on
+2026-09-21. Flushing on the way out would buy back at most one flush interval of
+re-fetching, at the price of a second copy of the flush/ack/commit order in the
+one file that has it.
+
+**A second signal cancels.** An operator who asks twice is not waiting for an
+in-flight fetch, so the run task is cancelled rather than polled. That can land
+inside a flush, which is the case the commit order already covers, and it still
+unwinds through the mode's cleanup — the part an unhandled `SIGTERM` used to
+skip, leaving the SQLite store open and the process dead where it stood.
+
 **The command line enforces what the runner cannot.** `ocsf-connector tail` takes
 no time bounds at all, because the opening `since` comes from configuration and a
 flag invites `--since $(date)` — the moving opening cursor §5.2 exists to prevent.
@@ -802,6 +830,16 @@ for an hour look identical in the state store. And `cursor_commit_lag_seconds`
 is observed only at a commit, so an idle stream leaves it stale rather than
 letting it grow. Liveness has to come from a signal the poll loop emits whether
 or not it has anything to ship.
+
+**Liveness is a line, not a metric.** The runner reports its running totals
+after every page, empty pages included, and the CLI prints one throttled line to
+stderr from them — `alive: 97 pages, 38 events written, …` — at most once every
+five minutes. It is deliberately not an eighth instrument: the thing an operator
+needs to see when a tail goes quiet is that the poll loop is still turning, and
+that has to be visible in a terminal and a container log without an
+observability stack, which §7's first rule says the connector must run without.
+Pages climbing with nothing written *is* the healthy idle tail described above.
+Silence now means wedged, which is the only reading it has ever needed to carry.
 
 **No telemetry call may sit between the sink's acknowledgement and the cursor
 commit.** That gap is the delivery guarantee (§5), and a metrics backend having a

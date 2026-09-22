@@ -32,6 +32,15 @@ class RunStats:
     commits: int = 0
     exhausted: bool = False
     """True when a bounded range ran out of pages, i.e. backfill completed."""
+    stopped_by: int | None = None
+    """Signal number that ended the run, or ``None`` if it ended on its own.
+
+    Set only when the loop broke because a stop was requested, so it and
+    ``exhausted`` cannot both be true: a range that completed was not stopped.
+    The runner does not interpret the number -- it reports it so the caller can
+    exit 128+n, the difference a supervisor reads between "asked to stop" and
+    "fell over".
+    """
 
 
 async def run(
@@ -43,6 +52,8 @@ async def run(
     stream: str,
     start: Callable[[], Awaitable[Cursor]],
     on_idle: Callable[[], Awaitable[None]] | None = None,
+    stop_signal: Callable[[], int | None] | None = None,
+    on_progress: Callable[[RunStats], None] | None = None,
     max_pages: int | None = None,
     metrics: Metrics | None = None,
     clock: Callable[[], float] = time.time,
@@ -58,6 +69,23 @@ async def run(
     "caught up", not "finished", so the caller sleeps there and the loop
     re-requests. ``max_pages`` bounds an otherwise infinite tail; it exists for
     tests and for graceful shutdown, not as a throttle.
+
+    ``stop_signal`` is read between pages and returns the signal number that
+    asked this run to end, or ``None`` to carry on. Checked there rather than
+    raised through the current await so the loop can return what it did -- a
+    tail never returns on its own, so being stopped is the only way it ever
+    reports anything. A stop does *not* flush the open batch: the cursor
+    commits only after an acknowledgement (§5), so whatever is buffered replays
+    from the committed cursor on the next start, which is the path a kill
+    already takes and was verified live. Flushing here instead would put a
+    second copy of the flush/ack/commit order in the one file that has it.
+
+    ``on_progress`` is called with the run so far after every page, empty pages
+    included. A healthy idle tail commits nothing and re-requests the same URL
+    forever (§7), so anything derived from its progress -- cursor age, commit
+    lag -- stands still, and only a signal emitted per poll separates idle from
+    wedged. The runner reports; how often to say it out loud is the caller's
+    policy, and `cli.liveness` holds it.
 
     ``purge_every_seconds`` paces the seen-set reclaim. The runner owns it
     because nothing else can: a tail never restarts, so a purge at startup would
@@ -83,7 +111,26 @@ async def run(
     pages = mapped = written = duplicates = commits = 0
     exhausted = False
 
+    def snapshot(stopped_by: int | None = None) -> RunStats:
+        return RunStats(
+            pages=pages,
+            mapped=mapped,
+            written=written,
+            duplicates_skipped=duplicates,
+            commits=commits,
+            exhausted=exhausted,
+            stopped_by=stopped_by,
+        )
+
     while max_pages is None or pages < max_pages:
+        # Before the fetch, so a stop that arrives while idle costs nothing and
+        # one that arrives mid-page still lets that page finish: a page already
+        # fetched is cheaper to commit than to replay.
+        if stop_signal is not None:
+            stopping = stop_signal()
+            if stopping is not None:
+                return snapshot(stopped_by=stopping)
+
         try:
             page = await source.fetch(cursor)
         except BaseException:
@@ -170,14 +217,12 @@ async def run(
         assert next_cursor is not None
         cursor = next_cursor
 
+        # After the commit and before the sleep, so the line an operator reads
+        # covers the page that just landed rather than the one before it.
+        if on_progress is not None:
+            on_progress(snapshot())
+
         if not page.records and on_idle is not None:
             await on_idle()
 
-    return RunStats(
-        pages=pages,
-        mapped=mapped,
-        written=written,
-        duplicates_skipped=duplicates,
-        commits=commits,
-        exhausted=exhausted,
-    )
+    return snapshot()

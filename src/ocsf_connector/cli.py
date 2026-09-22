@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import signal
 import sys
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import TextIO
 
 from pydantic import ValidationError
 
@@ -23,6 +26,15 @@ from ocsf_connector.runner.loop import RunStats
 from ocsf_connector.runner.modes import ColdStartRefused, backfill, tail
 
 DEFAULT_CONFIG = Path("config.toml")
+
+LIVENESS_SECONDS = 300.0
+"""How often a run says it is still there.
+
+Long enough that a tail polling every ten seconds prints a line an hour rather
+than a page of them, short enough to be missed by an operator watching a
+terminal. Fixed rather than configurable: the number below which an alert fires
+belongs to whatever is watching, not to the connector.
+"""
 
 
 def summarise(stats: RunStats) -> str:
@@ -40,7 +52,49 @@ def summarise(stats: RunStats) -> str:
     ]
     if stats.exhausted:
         parts.append("range complete")
+    if stats.stopped_by is not None:
+        # Named rather than numbered: "stopped on SIGTERM" says a supervisor
+        # asked, where "143" makes the reader look it up.
+        parts.append(f"stopped on {signal.Signals(stats.stopped_by).name}")
     return ", ".join(parts)
+
+
+def liveness(
+    *,
+    every_seconds: float = LIVENESS_SECONDS,
+    clock: Callable[[], float] = time.monotonic,
+    out: TextIO | None = None,
+) -> Callable[[RunStats], None]:
+    """A progress reporter that speaks at most once per ``every_seconds``.
+
+    A tail prints one line at startup and then, having nothing to report until
+    it stops, says nothing for as long as it runs -- so healthy-and-idle and
+    wedged look identical from outside, and the run summary cannot help because
+    it only exists once the run is over. SPEC §7 records why nothing already
+    emitted covers this: an idle tail commits nothing, so the stored cursor's
+    age and the commit lag both stand still while the poll loop is perfectly
+    healthy. The signal has to come from the loop itself.
+
+    The throttle lives here rather than in the runner because it is a question
+    about how much an operator wants to read, not about how the loop works. On
+    a monotonic clock, so a machine that steps its wall clock does not produce
+    an hour of silence or a burst of lines.
+    """
+    last = clock()
+
+    def report(stats: RunStats) -> None:
+        nonlocal last
+        now = clock()
+        if now - last < every_seconds:
+            return
+        last = now
+        # Resolved per line rather than defaulted in the signature: a default
+        # argument binds `sys.stderr` at import, so anything that replaces the
+        # stream afterwards -- a supervisor wrapping the process, a test -- goes
+        # on writing to the handle this module saw first.
+        print(f"alive: {summarise(stats)}", file=sys.stderr if out is None else out)
+
+    return report
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -115,13 +169,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     # over, and it was previously unanswerable from the outside. The path is
     # absolute by the time it gets here (config.StateConfig).
     print(f"state: {config.state.database}", file=sys.stderr)
+    progress = liveness(every_seconds=LIVENESS_SECONDS)
     try:
         if args.command == "tail":
-            print(f"tailing {destination} (Ctrl-C to stop)", file=sys.stderr)
-            stats = asyncio.run(tail(config, from_scratch=args.from_scratch))
+            print(f"tailing {destination} (Ctrl-C or SIGTERM to stop)", file=sys.stderr)
+            stats = asyncio.run(tail(config, from_scratch=args.from_scratch, on_progress=progress))
         else:
             print(f"backfilling {args.since} .. {args.until} {destination}", file=sys.stderr)
-            stats = asyncio.run(backfill(config, since=args.since, until=args.until))
+            stats = asyncio.run(
+                backfill(config, since=args.since, until=args.until, on_progress=progress)
+            )
     except MissingConfig as exc:
         # A setting this mode needs, not a runtime failure -- so it exits 2 with
         # the other configuration problems rather than 1.
@@ -134,14 +191,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         # and something has to be fixed before anything will.
         print(f"refusing to start: {exc}", file=sys.stderr)
         return 2
-    except KeyboardInterrupt:
-        # Tail never returns on its own, so this is its normal exit. The cursor
-        # is committed after every acknowledged batch, so stopping here loses
-        # nothing (§5).
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        # No longer the ordinary way a run ends: a signal is handled inside the
+        # loop now and comes back as `stopped_by`. What is left here is a signal
+        # arriving outside that window -- during startup or teardown -- and the
+        # second one, which cancels rather than waiting for the page in flight.
+        # Either way the cursor is committed only after an acknowledged batch,
+        # so stopping here loses nothing (§5).
         print("interrupted", file=sys.stderr)
         return 130
 
     print(summarise(stats), file=sys.stderr)
+    if stats.stopped_by is not None:
+        # The shell convention, and what a supervisor reads to tell "asked to
+        # stop" from "fell over": 130 for SIGINT, 143 for SIGTERM.
+        return 128 + stats.stopped_by
     return 0
 
 
