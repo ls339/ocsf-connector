@@ -10,6 +10,7 @@ Synthetic throughout (CLAUDE.md invariant 5).
 
 from __future__ import annotations
 
+import hashlib
 import json
 from io import BytesIO
 from pathlib import Path
@@ -28,6 +29,15 @@ REGION = "us-east-1"
 BATCH = "https://synthetic.okta.example/api/v1/logs?after=synthetic-after-0001"
 DAY_ONE_MS = 1_788_566_401_000  # 2026-09-05T00:00:01Z
 DAY_TWO_MS = 1_788_652_801_000  # 2026-09-06T00:00:01Z
+
+METADATA_STRUCT = (
+    "struct<version: string, uid: string, original_time: string, "
+    "event_code: string, product: struct<name: string, vendor_name: string>, "
+    "labels: list<item: string>>"
+)
+"""The metadata struct spelled out, so the spine test restates it rather than
+asking ``SPINE`` what it says. Nested because pyarrow drops unnamed struct keys
+silently -- the one place in this schema where being wrong is invisible."""
 
 
 class FakeClock:
@@ -173,9 +183,64 @@ async def test_the_object_is_zstd_parquet_sorted_by_time(tmp_path: Path) -> None
     assert [m["uid"] for m in table.column("metadata").to_pylist()] == ["early", "middle", "late"]
 
 
+def test_the_spine_is_what_the_glue_table_was_built_for() -> None:
+    """The spine restated literally, because nothing else can catch a wrong one.
+
+    Every other test in this file reads a file the sink built *from* ``SPINE``,
+    so ``SPINE`` is both the question and the answer: delete a field and it
+    leaves the declaration and the file together, with the suite still green.
+    pyarrow makes that worse than a normal gap, because a struct key the
+    declared type does not name is dropped silently on write (see
+    ``test_the_spine_declares_every_metadata_field_the_mapper_emits``).
+
+    So the types below are written out by hand. Changing what Security Lake's
+    Glue table sees should cost a deliberate edit here -- a column whose type
+    moves under a registered table is a migration, not a refactor.
+    """
+    assert [(field.name, str(field.type)) for field in SPINE] == [
+        ("time", "int64"),
+        ("class_uid", "int32"),
+        ("category_uid", "int32"),
+        ("activity_id", "int32"),
+        ("type_uid", "int64"),
+        ("severity_id", "int32"),
+        ("status_id", "int32"),
+        ("status", "string"),
+        ("status_detail", "string"),
+        ("message", "string"),
+        ("metadata", METADATA_STRUCT),
+        ("unmapped", "string"),
+    ]
+
+
+def test_the_spine_is_pinned_so_it_cannot_drift_quietly() -> None:
+    """The catch-all, in the style of the OCSF schema and mapping table pins.
+
+    The literal list above covers the fields somebody thought to write down.
+    This fails on *any* edit to the spine, including a reordering, which is the
+    intent: Parquet column order is part of what a Glue table was registered
+    against.
+    """
+    payload = tuple((field.name, str(field.type)) for field in SPINE)
+    digest = hashlib.sha256(repr(payload).encode()).hexdigest()[:12]
+
+    assert digest == "a530019578be", (
+        f"the Parquet spine changed. If that was deliberate, update this to {digest!r} "
+        "and say in the commit message what it means for an already-registered "
+        "Security Lake custom source"
+    )
+
+
 async def test_the_declared_spine_is_identical_across_objects(tmp_path: Path) -> None:
     """The Glue table's core must not drift between objects, whatever the class
-    or which optional fields an event happened to carry."""
+    or which optional fields an event happened to carry.
+
+    Cross-object consistency only. It reads ``SPINE`` to know what to look for
+    in files the sink wrote *from* ``SPINE``, so it cannot fail on a wrong
+    spine -- that is
+    ``test_the_spine_is_what_the_glue_table_was_built_for``'s job. What it does
+    catch is one object disagreeing with another.
+    """
     sink = make_sink(tmp_path)
     await sink.write([event("a1", class_uid=3002), event("b1", class_uid=3004, user=None)])
 
