@@ -71,6 +71,14 @@ Therefore the checkpoint is **the opaque `next` cursor and nothing else**.
 `published` is retained only as an observability signal (ingest lag), never as
 control state.
 
+**[verified] live, 2026-09-21.** A tail ran for 66 minutes against an Integrator
+Free Plan org and never reached an end. Every one of its 376 requests answered
+with a `next` link, empty pages included, so the table's "always present, even
+when the page is empty" is now observed rather than quoted. Nothing in the run
+distinguished *caught up* from *finished* — which is why tail has no termination
+condition at all, and why the export example's "continue until no events are
+returned" (§2.2) would have stopped this stream on its third page.
+
 ### 2.2 Pagination
 
 **[verified]** Pagination is via the `Link` response header with `rel="next"` and
@@ -79,6 +87,13 @@ in `next` links. Don't attempt to craft requests that use this value."
 
 So the connector persists the **entire next URL** verbatim, treats it as opaque,
 and never parses or reconstructs it.
+
+**[verified] live, 2026-09-21.** A real `after` value began with what reads as a
+millisecond epoch timestamp. That is the trap, not a convenience: a connector
+that believed its eyes here would be deriving a resume position from a
+timestamp, which §2.1 exists to forbid. The shape is recorded because it is
+tempting; the value is not recorded anywhere, and nothing in this connector
+reads either.
 
 **[verified]** Okta's own documentation shows why verbatim has to mean
 byte-for-byte. It states that "`since` and `after` are mutually exclusive and can't
@@ -127,6 +142,13 @@ empty page is not an error and not an end-of-stream — it means "no new events
 yet." The runner sleeps, then requests the `next` URL that the empty page
 returned. Okta does not say whether that URL equals the one just requested, so
 the runner does not assume it.
+
+**[verified] live, 2026-09-21.** It does. An idle tail sent 67 requests drawn
+from only four distinct URLs, the last of them 58 times in a row: an empty
+polling page returns a `next` link byte-identical to the URL that asked for it.
+The runner still does not assume it — it follows whatever came back — because
+this is observed behaviour on one org, not a documented promise, and the cost of
+being wrong is a stream that stops advancing.
 
 **Termination.** **[verified]** A bounded query has "a finite number of pages.
 That is, the last page doesn't contain a `next` link relation header." That
@@ -233,6 +255,21 @@ Okta page states the default outright. With it on:
   `Authorization: DPoP {token}` plus a **fresh** proof carrying `ath` (base64url
   SHA-256 of the token), `htm`, `htu`, `iat`, `jti`. Okta says the nonce "isn't
   currently required" in that proof.
+
+**[verified] live, 2026-09-21.** A 66-minute tail crossed the renewal margin
+exactly where the margin says it should: a new token was minted 2881 seconds
+after the first, 80.0% of the documented 3600-second lifetime, and the request
+that followed it half a second later was accepted. Two details only a live run
+could settle. The renewal was a *single* token request — no `use_dpop_nonce`
+challenge — because the nonce cached at startup was still good 48 minutes later,
+which is the first evidence that caching it buys anything. And the proof on the
+next API request carried an `ath` over the **new** token: a stale one would have
+been a 401, and there were none in 376 requests. This is the path the
+single-use-assertion bug of 2026-09-16 lived in.
+
+**Still unproven, and not to be read as covered.** Okta renews the nonce every
+24 hours and honours the previous value for three days. The run above *reused* a
+nonce; it never saw one rotate. Nothing short of an overnight tail does.
 
 v1 speaks both. A Bearer-only connector would ask the customer to weaken their
 app to run it, which is a poor trade in a tool whose subject is security data.
@@ -597,6 +634,17 @@ Exactly-once across a crash rests instead on **the sink write being idempotent**
   the events it drops are picked up by the batch starting where it ended — so
   differing batch boundaries are self-healing, not a leak.
 
+**[verified] live, 2026-09-21.** The key's stability across a process death was
+observed rather than reasoned about. A tail was killed with `SIGKILL` nine
+seconds after it fetched a page of events and well before its flush: it wrote no
+object, committed nothing, and added nothing to the seen-set, so the batch died
+in the buffer. Its successor resumed from the identical cursor, refetched those
+events along with newer ones, and wrote a **single** object named with the
+digest of that same cursor — the key the dead batch would have used. Nothing was
+lost, nothing was written twice, no earlier object was touched. Had the first
+process died one line later, inside the ack→commit gap, this is the overwrite
+that would have absorbed it.
+
 **The first batch is the exception, and it is the caller's to close.** Before the
 first commit there is no stored cursor, so the batch is keyed by whatever the
 opening query resolved to (§2.2). Crash in that first ack→commit gap and the
@@ -741,6 +789,19 @@ because Security Lake registers one source per class and a single number would
 hide a dead one (§4.1); the runner reports throughput, both lags, and errors by
 stage. Only `telemetry/` imports OpenTelemetry, and the default implementation is
 silent — this connector must never require an observability stack in order to run.
+
+**[verified] live, 2026-09-21. A healthy idle tail commits nothing, and that is
+not a fault.** A commit follows only a flush, and a flush follows only a
+non-empty buffer, so a tail with nothing new to ship holds its committed cursor
+unchanged indefinitely while re-requesting the same `next` URL every
+`poll_seconds`. Observed: a 66-minute run committed twice; a ten-minute run
+committed once and then sent 58 identical requests without committing again.
+Two consequences for anything watching this connector. The age of the stored
+cursor is not a liveness signal — a stream idle for an hour and a stream wedged
+for an hour look identical in the state store. And `cursor_commit_lag_seconds`
+is observed only at a commit, so an idle stream leaves it stale rather than
+letting it grow. Liveness has to come from a signal the poll loop emits whether
+or not it has anything to ship.
 
 **No telemetry call may sit between the sink's acknowledgement and the cursor
 commit.** That gap is the delivery guarantee (§5), and a metrics backend having a
