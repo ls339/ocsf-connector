@@ -638,12 +638,26 @@ derives** at startup rather than assume they agree. A silent disagreement writes
 objects no table points at.
 
 **One provider role per source means the destination is per-source, not global.**
-`ObjectStore.put(key, data)` is deliberately one method and says nothing about
-credentials, which was right while the destination was a directory. With seven
-sources there are seven roles to assume, each scoped to its own prefix, and the
-role a PUT needs is decided by the class of the records in it. Either the seam
-grows a source argument or the sink holds a store per class; parsing the source
-back out of the key it just built is not a third option.
+With seven sources there are seven roles to assume, each scoped to its own
+prefix, and the role a PUT needs is decided by the class of the records in it —
+something `ObjectStore.put(key, data)` could not express, having been designed
+when the destination was a directory.
+
+Resolved by making a write name its source: `put(source, key, data)`, where
+`key` is everything below that source's own prefix. The sink knows the source
+because it knows the class; the store knows where that source lives because
+registration told it. The alternative considered was a store per class, wired in
+the composition root — rejected because it moves the source from something a
+call states into something a dict key implies, and a misrouted entry would then
+write one class's records with another's role and prefix with nothing to notice.
+Parsing the source back out of a key the sink had just built from it was never a
+third option.
+
+The division has a second payoff. Two classes flushed from one batch derive the
+*same* key — the digest is the batch's opening cursor, the day is the day — so
+the source is the only thing separating them. That makes "the store ignores the
+source it was given" a one-line test with half a batch missing as its failure,
+rather than a subtle prefix bug found in Athena.
 
 **Base Event has nowhere sanctioned to go.** Invariant 4 degrades an unknown
 `eventType` to Base Event with the source record under `unmapped`, and Base Event

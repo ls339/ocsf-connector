@@ -140,7 +140,14 @@ class SecurityLakeSink:
         digest = hashlib.sha256(batch_key.encode("utf-8")).hexdigest()[:32]
         for (class_uid, event_day), events in _bucket(self._buffer).items():
             body = _parquet_bytes(events)
-            await self.store.put(self._key(class_uid, event_day, digest), body)
+            # The source decides where the object goes and, for S3, which role
+            # writes it; the partition decides where it sits inside that source
+            # (§4.2). The sink is the only layer that knows both.
+            await self.store.put(
+                source_name(self.source_name, class_uid),
+                self._partition(event_day, digest),
+                body,
+            )
             # Per class, because Security Lake registers one custom source per
             # class (§4.1) -- a single number would hide a dead source.
             self.metrics.count_object_written(class_uid=class_uid)
@@ -149,17 +156,20 @@ class SecurityLakeSink:
         self._buffered_bytes = 0
         self._opened_at = None
 
-    def _key(self, class_uid: int, event_day: str, digest: str) -> str:
-        """The prefix Security Lake requires (§4), one source per class (§4.1).
+    def _partition(self, event_day: str, digest: str) -> str:
+        """The partition Security Lake requires, below the source's own prefix.
+
+        AWS states the path as
+        ``{source location}/region={region}/accountId={accountId}/eventDay={YYYYMMDD}/``
+        (§4). Everything left of ``region=`` belongs to the source and therefore
+        to the store, which is told it at registration; this builds the rest.
 
         ``digest`` stands in for the cursor the batch began at: stable across a
         replay, so the replay overwrites, and path-safe, which an opaque URL is
         not (§5.2).
         """
-        source = source_name(self.source_name, class_uid)
         return (
-            f"ext/{source}"
-            f"/region={self.region}"
+            f"region={self.region}"
             f"/accountId={self.account_id}"
             f"/eventDay={event_day}"
             f"/{digest}.parquet"
