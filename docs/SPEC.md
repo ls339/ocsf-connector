@@ -538,6 +538,28 @@ Worked example — `user.session.start` → Authentication (3002), `activity_id`
   `AmazonSecurityLake-Provider-{source-name}-{region}` (permissions boundary
   `AmazonSecurityLakePermissionsBoundary`), a Lake Formation table, and a Glue
   crawler that populates the Data Catalog.
+- **Event classes:** `eventClasses` accepts only names from AWS's own enum
+  (pattern `[A-Z\_0-9]*`). All six OCSF 1.3 IAM classes are on it —
+  `ACCOUNT_CHANGE`, `AUTHENTICATION`, `AUTHORIZE_SESSION`, `ENTITY_MANAGEMENT`,
+  `GROUP_MANAGEMENT`, `USER_ACCESS`. **[verified] Base Event is not**, and
+  neither is anything resembling it. The parameter is optional, so whether a
+  source can be registered without declaring a class is the open question §4.2
+  records.
+- **[verified]** The provider writes as an **assumed role, one per source**. The
+  console asks for "the **AWS account ID** and **External ID** of the custom
+  source that will write logs and events to the data lake"; the API takes the
+  same pair as `providerIdentity` and returns `provider.roleArn` and
+  `provider.location`. So the credential a PUT needs depends on which source the
+  object belongs to.
+- **[verified]** The identity that *registers* needs `glue:CreateCrawler`,
+  `glue:CreateDatabase`, `glue:CreateTable`, `glue:StopCrawlerSchedule`,
+  `iam:GetRole`, `iam:PutRolePolicy`, `iam:DeleteRolePolicy`, `iam:PassRole`,
+  `lakeformation:RegisterResource`, `lakeformation:GrantPermissions`,
+  `s3:ListBucket`, `s3:PutObject` — plus `kms:CreateGrant`, `kms:DescribeKey`
+  and `kms:GenerateDataKey` for a customer-managed key. Registering through the
+  console creates the roles for you; the API and CLI require the Glue crawler
+  role to exist first (`AWSGlueServiceRole` plus inline `s3:GetObject`/`PutObject`
+  on the bucket, trusted by `glue.amazonaws.com`).
 
 ### 4.1 Design consequences
 
@@ -599,6 +621,45 @@ tension with the commit-after-ack rule in §5: a larger batch means fewer, bette
 Parquet objects but a longer window of un-acked work to replay after a crash. v1
 flushes on whichever comes first — 5 minutes elapsed or 256 MB buffered — and
 accepts the replay window, because dedup (§5) makes replay harmless.
+
+### 4.2 Registration, and the two things it decides for us
+
+Read from AWS's own pages on 2026-09-24, and both answers change code rather
+than configuration.
+
+**The prefix this connector builds is the documented one.** *"The partition data
+path is formatted as `/ext/{custom-source-name}/region={region}/accountId={accountID}/eventDay={YYYYMMDD}`"*,
+which is what `sinks/security_lake.py` derives, and `accountId` is where AWS
+recommends *"a string such as `external` or `external_externalAccountId`"* for
+records outside AWS. But the authoritative value is `provider.location`, handed
+back at registration and described as *"unique to the given source"* — so the
+connector should **check the location it was given against the prefix it
+derives** at startup rather than assume they agree. A silent disagreement writes
+objects no table points at.
+
+**One provider role per source means the destination is per-source, not global.**
+`ObjectStore.put(key, data)` is deliberately one method and says nothing about
+credentials, which was right while the destination was a directory. With seven
+sources there are seven roles to assume, each scoped to its own prefix, and the
+role a PUT needs is decided by the class of the records in it. Either the seam
+grows a source argument or the sink holds a store per class; parsing the source
+back out of the key it just built is not a third option.
+
+**Base Event has nowhere sanctioned to go.** Invariant 4 degrades an unknown
+`eventType` to Base Event with the source record under `unmapped`, and Base Event
+is absent from the list of event classes a custom source may declare.
+`eventClasses` is optional, so a source registered without one may accept the
+data anyway; that is unverified and is a five-minute experiment once credentials
+exist. Until then the safe reading is that degraded records reach the bucket but
+no Glue table, which loses nothing and is invisible to Athena —
+`unmapped_event_type_total` (§7) remains the signal that says to map the type
+properly.
+
+**A rename leaves litter.** *"Security Lake can't delete or update existing
+crawlers in your account. If you delete a custom source, we recommend deleting
+the associated crawler if you plan to create a custom source with the same name
+in the future."* One more reason the names in §4.1 are settled before delivery
+rather than during it.
 
 ---
 
@@ -891,7 +952,8 @@ makes the metrics call raise, then asserts the cursor committed anyway.
 - [OCSF 1.3.0 schema API](https://schema.ocsf.io/api/1.3.0/classes) — the emitted version: six IAM classes, per-class required attributes and constraints, `activity_id`/`status_id`/`severity_id` enums, `cloud` and `osint` as profile attributes, Base Event as `class_uid` 0 (checked 2026-09-12)
 - [OCSF schema repository, tag v1.3.0](https://github.com/ocsf/ocsf-schema/tree/v1.3.0) — `events/iam/*.json`, `events/base_event.json`, `dictionary.json` (`type_uid` formula) (checked 2026-09-12)
 - [OCSF — Authentication (3002)](https://schema.ocsf.io/1.9.0/classes/authentication) — activity IDs, required attributes, `type_uid` formula
-- [AWS — Collecting data from custom sources in Security Lake](https://docs.aws.amazon.com/security-lake/latest/userguide/custom-sources.html) — OCSF 1.3 ceiling, Parquet/zstd, partitioning, one class per object
+- [AWS — Collecting data from custom sources in Security Lake](https://docs.aws.amazon.com/security-lake/latest/userguide/custom-sources.html) — OCSF 1.3 ceiling, Parquet/zstd, partitioning, one class per object; the `/ext/{source}/region=/accountId=/eventDay=` path verbatim, `external_{id}` for non-AWS accounts, the `AmazonSecurityLake-Provider-{source}-{region}` role, the registering identity's permissions, and the Glue crawler role the API path requires (checked 2026-09-24)
+- [AWS — Adding a custom source in Security Lake](https://docs.aws.amazon.com/security-lake/latest/userguide/adding-custom-sources.html) — the supported `eventClasses` enum in full (Base Event is not in it; all six IAM classes are), the account id + external id the provider writes with, and the warning that a deleted source leaves its crawler behind (checked 2026-09-24)
 - [AWS — Security Lake API, `CreateCustomLogSource`](https://docs.aws.amazon.com/security-lake/latest/APIReference/API_CreateCustomLogSource.html) — `sourceName` ≤ 20 characters and why (the `AmazonSecurityLake-Provider-{name}-{region}` role's 64-character limit), pattern `[\w\-\_\:\.]*`; `eventClasses` pattern `[A-Z\_0-9]*`; the response's `provider.location` (the S3 prefix to write to) and `provider.roleArn` (checked 2026-09-24)
 - [Terraform AWS provider — `aws_securitylake_custom_log_source`](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/securitylake_custom_log_source) — `configuration.crawler_configuration.role_arn`, `configuration.provider_identity` (`external_id`, `principal`), and the `depends_on` the data lake resource requires (checked 2026-09-24)
 
