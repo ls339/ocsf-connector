@@ -2,9 +2,14 @@
 
 Two modules need to know what an OCSF class is, for different reasons. The
 mapper decides which attributes a record may carry and which activity ids are
-legal; the sink names the Security Lake custom source a class is written to.
+legal; the sink decides which Security Lake custom source a class is written to.
 Both used to hold their own copy in Python, with nothing relating them: adding a
 class meant editing two files that no compiler, and no test, connected.
+
+The sink's *names* moved back out, to `sinks/naming.py`, once AWS's 20-character
+cap on a custom source name made three of the OCSF class names unusable. What
+stays related is the obligation: every class defined here has exactly one source
+name there, and a test holds the two together (§4.1).
 
 This package is deliberately neutral. Putting the schema under ``mapping/``
 would have recreated the ``sinks -> mapping`` edge that was just removed -- the
@@ -64,8 +69,10 @@ REQUIRED_OBJECTS: dict[int, tuple[str, ...]] = {
 """The objects a class requires. Filled with a thin placeholder when absent: an
 invalid record helps nobody downstream."""
 
-CLASS_SOURCES: dict[int, str] = {
-    uid: str(definition["name"]) for uid, definition in _CLASSES.items()
-}
-"""One registered Security Lake custom source per class (§4.1), named as OCSF
-1.3.0 names the class."""
+CLASS_NAMES: dict[int, str] = {uid: str(definition["name"]) for uid, definition in _CLASSES.items()}
+"""OCSF 1.3.0's own name for each class.
+
+Not the Security Lake custom source name, which it used to be. AWS caps that at
+20 characters and three of these do not fit, so the source names are an
+AWS-shaped table in `sinks/naming.py` -- keeping OCSF's names here honest about
+the version they describe (§4.1)."""

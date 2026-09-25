@@ -27,6 +27,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from ocsf_connector.sinks.naming import check_source_names
+
 ENV_OVERRIDES: dict[str, tuple[str, ...]] = {
     "OCSF_OKTA_ORG_URL": ("okta", "org_url"),
     "OCSF_OKTA_CLIENT_ID": ("okta", "client_id"),
@@ -105,6 +107,21 @@ class SinkConfig(Strict):
     region: str
     account_id: str
     """``external_{okta_org_id}``: Okta events belong to no AWS account (§4.1)."""
+
+    @field_validator("source_name")
+    @classmethod
+    def _registrable(cls, value: str) -> str:
+        """Refuse a prefix whose derived source names cannot be registered.
+
+        Checked here because this is the last cheap moment. The prefix is in the
+        object key, the key is what a replay must reproduce (§5.2), and the
+        derived name is what a Glue table binds to -- so a prefix that overflows
+        AWS's cap is not a mistake you want to find at registration, still less
+        after a run has published objects under it. The rule itself belongs to
+        the sink, which owns the names; this only decides when to ask.
+        """
+        check_source_names(value)
+        return value
 
 
 class StateConfig(Strict):

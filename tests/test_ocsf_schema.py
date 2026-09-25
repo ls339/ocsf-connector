@@ -53,7 +53,7 @@ def test_the_schema_describes_the_classes_1_3_0_defines() -> None:
     """Base Event plus the six IAM classes. 1.3.0's IAM category ends at 3006:
     3007 and 3008 arrive later, and emitting one would be invalid here."""
     assert schema.VERSION == "1.3.0"
-    assert schema.CLASS_SOURCES == CLASSES
+    assert schema.CLASS_NAMES == CLASSES
 
 
 def test_each_class_sits_in_the_category_1_3_0_puts_it_in() -> None:
@@ -120,14 +120,19 @@ def test_the_base_attributes_every_class_carries() -> None:
     assert schema.BASE_ATTRIBUTES == EXPECTED_BASE_ATTRIBUTES
 
 
-def test_every_class_has_its_own_custom_source() -> None:
-    """One registered Security Lake source per class (§4.1), and the name is part
-    of the object key -- two classes sharing one would merge two streams."""
-    names = list(schema.CLASS_SOURCES.values())
+def test_every_class_is_named_the_way_ocsf_names_it() -> None:
+    """These are OCSF's names, not the Security Lake source names they used to
+    double as. Which custom source a class is written to is an AWS-shaped
+    decision and lives in `sinks/naming.py`; see §4.1 for why they parted."""
+    names = list(schema.CLASS_NAMES.values())
 
+    assert schema.CLASS_NAMES[3003] == "authorize_session", (
+        "and the name OCSF gives a class does not change because AWS caps the "
+        "length of a source name"
+    )
     assert len(set(names)) == len(names)
     for name in names:
-        assert name.replace("_", "").isalnum() and name.islower(), f"{name} is not a source slug"
+        assert name.replace("_", "").isalnum() and name.islower(), f"{name} is not a slug"
 
 
 def test_the_schema_is_pinned_so_it_cannot_drift_quietly() -> None:
@@ -142,13 +147,13 @@ def test_the_schema_is_pinned_so_it_cannot_drift_quietly() -> None:
     entries = sorted(
         (
             uid,
-            schema.CLASS_SOURCES[uid],
+            schema.CLASS_NAMES[uid],
             schema.CLASS_CATEGORY_UID[uid],
             tuple(sorted(schema.ACTIVITY_IDS[uid])),
             tuple(sorted(schema.CLASS_ATTRIBUTES[uid])),
             schema.REQUIRED_OBJECTS[uid],
         )
-        for uid in schema.CLASS_SOURCES
+        for uid in schema.CLASS_NAMES
     )
     payload = (schema.VERSION, tuple(sorted(schema.BASE_ATTRIBUTES)), entries)
     digest = hashlib.sha256(repr(payload).encode()).hexdigest()[:12]

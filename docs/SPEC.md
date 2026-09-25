@@ -530,6 +530,10 @@ Worked example — `user.session.start` → Authentication (3002), `activity_id`
   record within a Parquet-formatted object," and sources spanning multiple
   categories "should deliver each unique OCSF event class as a separate source."
 - **Limit:** max **50 custom sources per account**.
+- **Source name:** **[verified]** *"You must use a `CustomLogSource` name that is
+  shorter than or equal to 20 characters. This ensures that the
+  `LogProviderRole` name is below the 64 character limit."* Pattern
+  `[\w\-\_\:\.]*`, and the name must be unique within the region.
 - **[verified]** Registration creates: an IAM role named
   `AmazonSecurityLake-Provider-{source-name}-{region}` (permissions boundary
   `AmazonSecurityLakePermissionsBoundary`), a Lake Formation table, and a Glue
@@ -545,6 +549,26 @@ sink therefore:
 2. Writes a separate Parquet object per (class, eventDay) pair.
 3. Registers **one Security Lake custom source per OCSF class** — e.g.
    `okta_authentication`, `okta_account_change`. Well within the 50-source cap.
+
+**The 20-character cap decides the names, not OCSF.** The source name was OCSF's
+class name, read from the same schema the mapper reads so the two could not
+drift. Three do not fit: `authorize_session` and `entity_management` are 17
+characters, which leaves room for a two-character prefix and nothing else. So
+the names are an AWS-shaped table in `sinks/naming.py`, keeping OCSF's own names
+in `ocsf/schema.py` honest about the version they describe. The table keeps
+OCSF's name wherever it fits and shortens only what overflows —
+`session_authz`, `entity`, `group` — because a name is what an analyst picks
+from a list, and a uniform abbreviation would have put `okta_authn` and
+`okta_authz` next to each other, one letter apart, where choosing wrong is
+silent and the results still look plausible.
+
+This is settled before delivery rather than after because the name is in the
+object key. The key is what a replay must reproduce (§5.2) and what a Glue table
+binds to, so renaming a source later means rewriting every object published
+under the old prefix. `sink.source_name` is configurable, so the cap is enforced
+when configuration loads, reported against the *longest* derived name so that
+the amount it says to shorten by is enough for all seven, and pinned by a digest
+test so a rename cannot ride along in an unrelated commit.
 
 **The Parquet schema is half declared, half inferred, and that is a decision.**
 It becomes the Glue table that Athena queries bind to, so changing it later means
@@ -868,6 +892,8 @@ makes the metrics call raise, then asserts the cursor committed anyway.
 - [OCSF schema repository, tag v1.3.0](https://github.com/ocsf/ocsf-schema/tree/v1.3.0) — `events/iam/*.json`, `events/base_event.json`, `dictionary.json` (`type_uid` formula) (checked 2026-09-12)
 - [OCSF — Authentication (3002)](https://schema.ocsf.io/1.9.0/classes/authentication) — activity IDs, required attributes, `type_uid` formula
 - [AWS — Collecting data from custom sources in Security Lake](https://docs.aws.amazon.com/security-lake/latest/userguide/custom-sources.html) — OCSF 1.3 ceiling, Parquet/zstd, partitioning, one class per object
+- [AWS — Security Lake API, `CreateCustomLogSource`](https://docs.aws.amazon.com/security-lake/latest/APIReference/API_CreateCustomLogSource.html) — `sourceName` ≤ 20 characters and why (the `AmazonSecurityLake-Provider-{name}-{region}` role's 64-character limit), pattern `[\w\-\_\:\.]*`; `eventClasses` pattern `[A-Z\_0-9]*`; the response's `provider.location` (the S3 prefix to write to) and `provider.roleArn` (checked 2026-09-24)
+- [Terraform AWS provider — `aws_securitylake_custom_log_source`](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/securitylake_custom_log_source) — `configuration.crawler_configuration.role_arn`, `configuration.provider_identity` (`external_id`, `principal`), and the `depends_on` the data lake resource requires (checked 2026-09-24)
 
 Re-verify §2 and §4 before v1 ships. Both vendors change these pages.
 

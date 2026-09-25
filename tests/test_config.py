@@ -37,6 +37,33 @@ def write(tmp_path: Path, body: str) -> Path:
     return path
 
 
+def test_a_source_name_that_cannot_be_registered_is_a_configuration_error(
+    tmp_path: Path,
+) -> None:
+    """Caught at load, not at registration.
+
+    `sink.source_name` prefixes the per-class Security Lake sources, AWS caps
+    those at 20 characters, and the name is in the object key -- so a prefix
+    that overflows is discovered either here, or after a run has published
+    objects under a prefix no custom source can ever be created for (§4.1).
+    """
+    too_long = write(tmp_path, MINIMAL + '\nsource_name = "okta-production"\n')
+
+    with pytest.raises(ValidationError) as refused:
+        load_config(too_long, env={})
+
+    message = str(refused.value)
+    assert "okta-production_account_change" in message
+    assert "Shorten sink.source_name by 10" in message
+
+
+def test_a_source_name_that_fits_is_accepted(tmp_path: Path) -> None:
+    """The contrast case: the guard must not refuse a prefix that is fine."""
+    fits = write(tmp_path, MINIMAL + '\nsource_name = "okta2"\n')
+
+    assert load_config(fits, env={}).sink.source_name == "okta2"
+
+
 def test_a_minimal_file_loads_with_sensible_defaults(tmp_path: Path) -> None:
     config = load_config(write(tmp_path, MINIMAL), env={})
 

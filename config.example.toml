@@ -46,6 +46,11 @@ directory = "out"
 
 # Prefixes the per-class custom source names: okta_authentication,
 # okta_account_change, and so on -- Security Lake registers one source per class.
+#
+# Keep it short. Security Lake allows 20 characters for a custom source name, and
+# the longest suffix here is 14, so anything over five characters is refused when
+# this file loads. The name is also in the S3 object key, so it is not a label
+# you can change later without stranding what was already written.
 source_name = "okta"
 
 region = "us-east-1"

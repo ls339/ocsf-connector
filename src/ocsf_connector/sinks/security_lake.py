@@ -36,10 +36,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from ocsf_connector.domain import OcsfEvent
-
-# One source per class, named as OCSF names the class -- the same definition the
-# mapper reads, rather than a second copy that could drift from it.
-from ocsf_connector.ocsf.schema import CLASS_SOURCES
+from ocsf_connector.sinks.naming import source_name
 from ocsf_connector.sinks.objects import ObjectStore
 from ocsf_connector.telemetry.base import Metrics, NullMetrics
 
@@ -159,7 +156,7 @@ class SecurityLakeSink:
         replay, so the replay overwrites, and path-safe, which an opaque URL is
         not (§5.2).
         """
-        source = f"{self.source_name}_{CLASS_SOURCES[class_uid]}"
+        source = source_name(self.source_name, class_uid)
         return (
             f"ext/{source}"
             f"/region={self.region}"
