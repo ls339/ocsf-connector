@@ -93,14 +93,14 @@ Secrets are named, never stored: the config file holds a *path* to the PEM priva
 key. Any setting can be overridden from the environment — the full list of
 variables is one table in `src/ocsf_connector/config.py`.
 
-**What does not work yet.** `kind = "s3"` puts objects in a bucket, but nothing has
-run against one: the store is covered by stubbed AWS calls in the suite, and the
-properties only a real bucket can show — a PUT durable when it returns, a
-replayed write leaving one object — are what `scripts/s3_probe.py` exists to
-check. Nothing registers the Security Lake custom sources yet, and a registered
-source is written by a role Security Lake creates per source, which the store
-does not assume yet (see `docs/SPEC.md` §4.2). The source, auth and tail paths
-have run against a live org.
+**What does not work yet.** `kind = "s3"` delivers to a bucket, and the write path
+is verified against a real one — a PUT durable when it returns, a replayed write
+leaving one object, an error reaching the caller (`scripts/s3_probe.py`, SPEC
+§4.2). What is unproven is everything registration adds. `terraform/` registers
+the seven custom sources and has never been applied, because Security Lake is not
+enabled anywhere yet; and a registered source is written by a role Security Lake
+creates per source, which the store does not assume yet. The source, auth and
+tail paths have run against a live org.
 
 ## Design
 
@@ -119,7 +119,7 @@ src/ocsf_connector/
   runner/           tail and backfill
   telemetry/        ingest lag, error rate, unmapped-type drift
 tests/fixtures/     recorded API pages -- all synthetic
-terraform/          Security Lake custom source registration
+terraform/          Security Lake custom source registration (one source per class)
 ```
 
 ## Data handling

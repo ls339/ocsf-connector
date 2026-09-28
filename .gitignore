@@ -30,9 +30,19 @@ state/*.db
 state/*.db-wal
 state/*.db-shm
 out/
+
+# Terraform. .terraform/ is the downloaded provider (hundreds of megabytes) and
+# state can hold the external id the provider roles trust, so neither belongs
+# here. .terraform.lock.hcl is deliberately NOT ignored: it pins provider
+# hashes, which is the point of having it. *.tfvars names an account id and that
+# external id -- the same reasoning as config.toml above -- so the tracked
+# template is terraform.tfvars.example.
 .terraform/
 *.tfstate
 *.tfstate.*
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
 .DS_Store
 .claude/settings.local.json
 

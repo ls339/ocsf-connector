@@ -689,6 +689,17 @@ default is `legacy`, and there is no retry loop beyond it: a failed flush leaves
 the cursor where it was, so the batch replays into the same key, which is the
 recovery a crash already gets.
 
+`terraform/` registers the sources: one `aws_securitylake_custom_log_source` per
+class, the Glue crawler role the API path requires (the console creates an
+equivalent itself), and outputs carrying each source's reported location and
+provider role. It deliberately does not manage `aws_securitylake_data_lake` —
+enabling a lake is slow, creates buckets and Lake Formation tables, and in an
+Organization belongs to the delegated administrator, so it should not happen as a
+side effect of registering a source. The class suffixes there and the sink's
+naming table are held together by `tests/test_terraform_sources.py`, which reads
+the HCL as text: the two cannot see each other, and their disagreement would show
+up as objects arriving where no Glue table points.
+
 Three things wait for a registered source, because each needs a value only
 registration produces: assuming the per-source provider role (one method,
 `_client_for`, so nothing above it changes), the check that the prefix derived
