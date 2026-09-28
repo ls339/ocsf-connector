@@ -37,7 +37,8 @@ from ocsf_connector.config import Config, MissingConfig
 from ocsf_connector.mapping.okta import OktaOcsfMapper
 from ocsf_connector.runner.loop import RunStats, run
 from ocsf_connector.runner.shutdown import stop_on_signals
-from ocsf_connector.sinks.objects import LocalObjectStore
+from ocsf_connector.sinks.objects import LocalObjectStore, ObjectStore
+from ocsf_connector.sinks.s3 import S3ObjectStore
 from ocsf_connector.sinks.security_lake import SecurityLakeSink
 from ocsf_connector.sources.okta.auth import BearerAuth, DpopAuth, OktaClientCredentials
 from ocsf_connector.sources.okta.source import OktaSource
@@ -103,6 +104,8 @@ def assemble(config: Config, client: httpx.AsyncClient) -> Assembled:
         else BearerAuth(credentials)
     )
 
+    store_for_objects = _objects(config)
+
     config.state.database.parent.mkdir(parents=True, exist_ok=True)
     store = SqliteStateStore(config.state.database, ttl_seconds=config.state.ttl_hours * 3600)
 
@@ -120,7 +123,7 @@ def assemble(config: Config, client: httpx.AsyncClient) -> Assembled:
         ),
         mapper=mapper,
         sink=SecurityLakeSink(
-            store=LocalObjectStore(config.sink.directory),
+            store=store_for_objects,
             source_name=config.sink.source_name,
             region=config.sink.region,
             account_id=config.sink.account_id,
@@ -129,6 +132,22 @@ def assemble(config: Config, client: httpx.AsyncClient) -> Assembled:
         store=store,
         metrics=metrics,
     )
+
+
+def _objects(config: Config) -> ObjectStore:
+    """Where finished objects go, by configured kind.
+
+    The two kinds are not a preference: ``local`` is how the partition layout is
+    read by eye (§4) and ``s3`` is the only one that delivers. `config.SinkConfig`
+    has already refused the combinations that would let a run look like it
+    delivers when it does not.
+    """
+    if config.sink.kind == "s3":
+        # Checked by SinkConfig; asserted rather than defaulted, because a
+        # default bucket is a bucket somebody else owns.
+        assert config.sink.bucket is not None
+        return S3ObjectStore(bucket=config.sink.bucket, region=config.sink.region)
+    return LocalObjectStore(config.sink.directory)
 
 
 async def tail(

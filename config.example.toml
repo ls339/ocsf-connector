@@ -40,9 +40,17 @@ limit = 1000
 poll_seconds = 10.0
 
 [sink]
-# "local" writes Parquet to a directory. S3 delivery is a separate piece of work.
+# Where finished objects go. "local" writes Parquet into a directory, which is how
+# the partition layout gets read by eye without deploying anything; "s3" is the
+# one that delivers. A bucket named beside kind = "local" is refused, because a
+# run configured with a bucket it never writes to looks exactly like one that
+# delivers.
 kind = "local"
 directory = "out"
+
+# Required by kind = "s3", and only by it. Credentials come from the environment
+# the way every other AWS tool finds them -- never from this file.
+# bucket = "aws-security-data-lake-..."
 
 # Prefixes the per-class custom source names: okta_authentication,
 # okta_account_change, and so on -- Security Lake registers one source per class.

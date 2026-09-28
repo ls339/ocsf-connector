@@ -25,6 +25,8 @@ from ocsf_connector.cli import build_parser, liveness, main, summarise
 from ocsf_connector.config import load_config
 from ocsf_connector.runner.loop import RunStats
 from ocsf_connector.runner.modes import BACKFILL_STREAM, TAIL_STREAM, assemble
+from ocsf_connector.sinks.objects import LocalObjectStore
+from ocsf_connector.sinks.s3 import S3ObjectStore
 from ocsf_connector.sources.okta.auth import BearerAuth, DpopAuth
 from ocsf_connector.state.sqlite import SqliteStateStore
 from ocsf_connector.telemetry.base import NullMetrics
@@ -464,6 +466,36 @@ async def test_assemble_wires_the_pipeline_from_config(tmp_path: Path) -> None:
             assert parts.sink.source_name == "okta"
             assert isinstance(parts.metrics, NullMetrics), "telemetry off by default"
             assert (tmp_path / "state").exists() or config.state.database.parent.exists()
+        finally:
+            parts.close()
+
+
+async def test_the_configured_kind_decides_where_objects_go(tmp_path: Path) -> None:
+    """The wire that makes delivery real. Everything upstream is identical for
+    both kinds, so this is the only place that decides whether a run writes to a
+    directory or to AWS."""
+    body = MINIMAL + '\nkind = "s3"\nbucket = "synthetic-lake"\n'
+    config = load_config(config_with_keys(tmp_path, body), env={})
+
+    async with httpx.AsyncClient() as client:
+        parts = assemble(config, client)
+        try:
+            store = parts.sink.store
+            assert isinstance(store, S3ObjectStore)
+            assert (store.bucket, store.region) == ("synthetic-lake", "us-east-1")
+        finally:
+            parts.close()
+
+
+async def test_local_stays_the_default(tmp_path: Path) -> None:
+    """A run that was not told to deliver must not deliver, and must not need to
+    be told not to."""
+    config = load_config(config_with_keys(tmp_path), env={})
+
+    async with httpx.AsyncClient() as client:
+        parts = assemble(config, client)
+        try:
+            assert isinstance(parts.sink.store, LocalObjectStore)
         finally:
             parts.close()
 

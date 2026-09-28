@@ -37,6 +37,39 @@ def write(tmp_path: Path, body: str) -> Path:
     return path
 
 
+def test_s3_needs_a_bucket(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match=r"sink\.bucket"):
+        load_config(write(tmp_path, MINIMAL + '\nkind = "s3"\n'), env={})
+
+
+def test_a_bucket_beside_the_local_kind_is_refused(tmp_path: Path) -> None:
+    """The half that matters. A connector configured with a bucket it never
+    writes to looks exactly like one that delivers, and from outside the only
+    symptom is a bucket that stays empty -- which is also what a healthy idle
+    stream looks like (§7)."""
+    with pytest.raises(ValidationError, match="nothing is delivered"):
+        load_config(write(tmp_path, MINIMAL + '\nbucket = "synthetic-lake"\n'), env={})
+
+
+def test_s3_with_a_bucket_loads(tmp_path: Path) -> None:
+    body = MINIMAL + '\nkind = "s3"\nbucket = "synthetic-lake"\n'
+
+    config = load_config(write(tmp_path, body), env={})
+
+    assert (config.sink.kind, config.sink.bucket) == ("s3", "synthetic-lake")
+
+
+def test_the_destination_can_be_switched_from_the_environment(tmp_path: Path) -> None:
+    """Both halves have to come from the same place or an override cannot land:
+    setting only the kind would fail validation for want of a bucket."""
+    config = load_config(
+        write(tmp_path, MINIMAL),
+        env={"OCSF_SINK_KIND": "s3", "OCSF_SINK_BUCKET": "synthetic-lake"},
+    )
+
+    assert (config.sink.kind, config.sink.bucket) == ("s3", "synthetic-lake")
+
+
 def test_a_source_name_that_cannot_be_registered_is_a_configuration_error(
     tmp_path: Path,
 ) -> None:

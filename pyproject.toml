@@ -56,3 +56,13 @@ strict = true
 [[tool.mypy.overrides]]
 module = ["pyarrow.*"]
 ignore_missing_imports = true
+
+# boto3 and botocore ship no py.typed either. Typed stubs do exist
+# (boto3-stubs[s3]) and were not taken: the one call this project makes through
+# them, put_object, is checked against botocore's own service model by the
+# Stubber in tests/test_s3_object_store.py, which catches a misspelled argument
+# the same way a stub would and does not need its version kept in step with
+# botocore's. As with pyarrow, the exemption is for the import only.
+[[tool.mypy.overrides]]
+module = ["boto3.*", "botocore.*"]
+ignore_missing_imports = true

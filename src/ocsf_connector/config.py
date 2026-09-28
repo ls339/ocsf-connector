@@ -25,7 +25,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ocsf_connector.sinks.naming import check_source_names
 
@@ -36,7 +36,9 @@ ENV_OVERRIDES: dict[str, tuple[str, ...]] = {
     "OCSF_OKTA_PRIVATE_KEY_FILE": ("okta", "private_key_file"),
     "OCSF_OKTA_DPOP_KEY_FILE": ("okta", "dpop_key_file"),
     "OCSF_OKTA_SINCE": ("okta", "since"),
+    "OCSF_SINK_KIND": ("sink", "kind"),
     "OCSF_SINK_DIRECTORY": ("sink", "directory"),
+    "OCSF_SINK_BUCKET": ("sink", "bucket"),
     "OCSF_SINK_REGION": ("sink", "region"),
     "OCSF_SINK_ACCOUNT_ID": ("sink", "account_id"),
     "OCSF_SINK_SOURCE_NAME": ("sink", "source_name"),
@@ -98,10 +100,16 @@ class OktaConfig(Strict):
 
 
 class SinkConfig(Strict):
-    kind: Literal["local"] = "local"
-    """Only local for now. S3 delivery is its own issue, and pretending the
-    option exists would be worse than admitting it does not."""
+    kind: Literal["local", "s3"] = "local"
+    """Where finished objects go. ``local`` writes files, which is how the
+    partition layout is inspected without deploying anything (§4); ``s3`` puts
+    them in a bucket, which is the only one that delivers."""
     directory: Path = Path("out")
+    """Where ``local`` writes. Ignored by ``s3``."""
+    bucket: str | None = None
+    """Where ``s3`` writes. Required by that kind, and refused by the other --
+    a bucket named beside ``kind = "local"`` means someone believes this run is
+    delivering when it is not."""
     source_name: str = "okta"
     """Prefixes the per-class custom source names: okta_authentication, ... (§4.1)."""
     region: str
@@ -122,6 +130,26 @@ class SinkConfig(Strict):
         """
         check_source_names(value)
         return value
+
+    @model_validator(mode="after")
+    def _destination_matches_kind(self) -> SinkConfig:
+        """Each kind needs its own destination, and only its own.
+
+        Refusing a stray ``bucket`` beside ``kind = "local"`` is the half that
+        matters. A connector configured with a bucket it never writes to looks
+        exactly like one that delivers, and the only way to tell from outside is
+        to notice that the bucket stays empty -- which is also what a healthy
+        idle stream looks like (§7).
+        """
+        if self.kind == "s3" and not self.bucket:
+            raise ValueError('sink.kind = "s3" needs sink.bucket: there is nowhere to put objects')
+        if self.kind == "local" and self.bucket is not None:
+            raise ValueError(
+                'sink.bucket is set but sink.kind = "local", so nothing is delivered to it. '
+                'Set kind = "s3" to deliver, or drop the bucket to say plainly that this run '
+                "writes to a directory"
+            )
+        return self
 
 
 class StateConfig(Strict):

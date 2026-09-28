@@ -74,6 +74,10 @@ uv run ocsf-connector tail
 uv run ocsf-connector backfill --since 2026-09-01T00:00:00Z --until 2026-09-02T00:00:00Z
 ```
 
+Set `kind = "s3"` and a `bucket` to deliver; the default writes Parquet into
+`out/` instead, laid out exactly as it would be in the bucket so a partition
+mistake is visible in a directory tree.
+
 `tail` follows the stream forever and resumes from the committed cursor. `backfill`
 walks a closed range and exits. They run under different stream names on purpose,
 so a backfill cannot overwrite the tail's resume position, and they share the dedup
@@ -89,9 +93,14 @@ Secrets are named, never stored: the config file holds a *path* to the PEM priva
 key. Any setting can be overridden from the environment — the full list of
 variables is one table in `src/ocsf_connector/config.py`.
 
-**What does not work yet.** The sink writes Parquet to a local directory. Nothing
-delivers to S3 or registers the Security Lake custom sources. The source, auth
-and tail paths have run against a live org; the sink has not.
+**What does not work yet.** `kind = "s3"` puts objects in a bucket, but nothing has
+run against one: the store is covered by stubbed AWS calls in the suite, and the
+properties only a real bucket can show — a PUT durable when it returns, a
+replayed write leaving one object — are what `scripts/s3_probe.py` exists to
+check. Nothing registers the Security Lake custom sources yet, and a registered
+source is written by a role Security Lake creates per source, which the store
+does not assume yet (see `docs/SPEC.md` §4.2). The source, auth and tail paths
+have run against a live org.
 
 ## Design
 

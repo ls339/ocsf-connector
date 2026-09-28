@@ -659,6 +659,23 @@ the source is the only thing separating them. That makes "the store ignores the
 source it was given" a one-line test with half a batch missing as its failure,
 rather than a subtle prefix bug found in Athena.
 
+**What is built, and what waits for a registered source.** `sinks/s3.py` writes
+to any bucket with the caller's own credentials, which is all a plain bucket
+needs and is enough to prove the part that matters: that a PUT is durable when it
+returns, since that return is what licenses a cursor commit (§5). One PUT per
+object and no multipart, because the buffer ceiling is 256 MB and a multipart
+upload adds a second kind of half-finished state for the commit order to reason
+about. Retries are botocore's `standard` mode, asked for explicitly because the
+default is `legacy`, and there is no retry loop beyond it: a failed flush leaves
+the cursor where it was, so the batch replays into the same key, which is the
+recovery a crash already gets.
+
+Three things wait for a registered source, because each needs a value only
+registration produces: assuming the per-source provider role (one method,
+`_client_for`, so nothing above it changes), the check that the prefix derived
+here matches the reported `provider.location`, and whether an in-sink retry is
+worth having, which wants real failures rather than a guess.
+
 **Base Event has nowhere sanctioned to go.** Invariant 4 degrades an unknown
 `eventType` to Base Event with the source record under `unmapped`, and Base Event
 is absent from the list of event classes a custom source may declare.
