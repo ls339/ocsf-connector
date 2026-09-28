@@ -10,7 +10,7 @@
 # Seeded from the event types Okta names on its System Log query page. Okta emits
 # hundreds more and adds them continuously; that is what the fallback is for.
 
-version: okta-2026.09.18
+version: okta-2026.09.28
 ocsf_version: "1.3.0"
 
 # Base Event (class_uid 0, category_uid 0) with activity Unknown. OCSF 1.3.0's
@@ -24,6 +24,20 @@ events:
   # --- sessions and authentication (3002 Authentication) -------------------
   user.session.start: {class_uid: 3002, activity_id: 1}     # Logon
   user.authentication.sso: {class_uid: 3002, activity_id: 1}
+
+  # MFA steps, at 6 Preauth rather than 1 Logon. Two reasons, in order.
+  #
+  # A sign-in already emits user.session.start at activity 1; adding a second
+  # activity-1 row for the MFA step inside the same sign-in would inflate every
+  # count of logons. Preauth is also simply the better label: 1.3.0 uses Kerberos
+  # vocabulary, where preauth is the step that proves identity before the ticket
+  # is granted, which is what an MFA challenge is.
+  #
+  # Not Base Event: an MFA verification *is* authentication, and at 3002 it
+  # carries user, src_endpoint and is_mfa as columns, so "MFA verifications for
+  # this user" is a query rather than a JSON string in unmapped.
+  user.authentication.auth_via_mfa: {class_uid: 3002, activity_id: 6}   # Preauth
+  user.authentication.verify: {class_uid: 3002, activity_id: 6}         # Preauth
 
   # --- user lifecycle (3001 Account Change) --------------------------------
   user.lifecycle.create: {class_uid: 3001, activity_id: 1}      # Create
@@ -75,18 +89,24 @@ events:
   app.oauth2.token.grant.access_token: {class_uid: 3002, activity_id: 4}
   app.oauth2.token.grant.refresh_token: {class_uid: 3002, activity_id: 5}  # Renew
   app.oauth2.authorize.code: {class_uid: 3002, activity_id: 3}            # Authentication Ticket
-
-  # Deliberately absent, awaiting a decision (SPEC §3.3, issue pet.15):
-  #   user.authentication.auth_via_mfa, user.authentication.verify,
-  #   app.oauth2.token.grant.id_token  -- mapping any of these to activity 1
-  #     would double-count sign-ins against user.session.start
-  #   policy.evaluate_sign_on          -- a policy decision, no IAM home in 1.3.0
-  #   user.session.access_admin_app    -- app access inside an existing session
-  # They fall through to Base Event, which is the honest answer until someone
-  # decides, and the drift counter keeps naming them until someone does.
+  # An ID token is an assertion about who the user is, not a ticket for reaching
+  # a service, so none of 3/4/5 describes it -- and activity 1 would double-count
+  # the sign-in it belongs to. Other, in Authentication rather than Base Event, so
+  # the four events of one OAuth flow stay in one table and can be read together.
+  app.oauth2.token.grant.id_token: {class_uid: 3002, activity_id: 99}     # Other
 
   # --- no IAM home in 1.3.0 -------------------------------------------------
-  # A blocked request is not an identity event. It is mapped deliberately to
-  # Base Event / Other rather than left out, so it does not register as source
-  # drift every time it occurs.
+  # These are not identity events, so they are Base Event -- but mapped
+  # deliberately to activity 99 Other rather than left out of this file. Left out,
+  # each occurrence would register as source drift, and a drift alarm that names
+  # five event types every run has no way left to say "Okta emitted something
+  # new" (§7). Activity 99 also separates a decision from an accident: the
+  # fallback is activity 0 Unknown, so 99 means somebody looked.
   security.request.blocked: {class_uid: 0, activity_id: 99}
+  # A policy decision, evaluated during a sign-in but not itself an
+  # authentication: nothing was proved and nobody was let in. 1.3.0's IAM
+  # category has no member for a policy evaluation.
+  policy.evaluate_sign_on: {class_uid: 0, activity_id: 99}
+  # Reaching the admin console inside a session that already exists. Not a logon
+  # -- the logon was user.session.start -- and not account or entity management.
+  user.session.access_admin_app: {class_uid: 0, activity_id: 99}

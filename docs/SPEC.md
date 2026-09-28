@@ -477,15 +477,35 @@ Assign Privileges and Assign Groups. Note that a client-credentials grant has no
 user while 3002 requires one, so those records carry a placeholder — honest, but
 it distorts any count of distinct users.
 
-**Five stay unmapped deliberately**, and the reason is analytic rather than
-structural. Mapping `user.authentication.auth_via_mfa`,
-`user.authentication.verify` or `app.oauth2.token.grant.id_token` to activity 1
-Logon would **double-count sign-ins**: one `user.session.start` plus one
-`auth_via_mfa` reads as two logons. `policy.evaluate_sign_on` is a policy
-decision and `user.session.access_admin_app` is app access inside an existing
-session; 1.3.0's IAM category has no home for either. Base Event is the honest
-answer until someone decides otherwise, the drift counter keeps naming them, and
-a test pins the omission so it cannot be closed by accident.
+**The five that were held back are decided (2026-09-28).** They waited because
+the obvious mapping was wrong, not because the events were unclear: activity 1
+Logon on any of the first three **double-counts sign-ins**, since one
+`user.session.start` plus one `auth_via_mfa` reads as two logons to anyone
+counting them.
+
+| Okta event | OCSF | Why |
+|---|---|---|
+| `user.authentication.auth_via_mfa` | 3002 / 6 Preauth | An MFA challenge *is* authentication. 1.3.0's activities are Kerberos vocabulary, where preauth is proving identity before the ticket is granted — which is what this is. Not activity 1: it happens inside a sign-in that already emitted one. |
+| `user.authentication.verify` | 3002 / 6 Preauth | The same step, reported per factor |
+| `app.oauth2.token.grant.id_token` | 3002 / 99 Other | An assertion about who somebody is, not a ticket for reaching a service, so none of 3/4/5 fits. Kept in Authentication so the four events of one OAuth flow stay in one table. |
+| `policy.evaluate_sign_on` | 0 / 99 Other | A policy decision evaluated during a sign-in. Nothing was proved and nobody was let in, and 1.3.0's IAM category has no member for it. |
+| `user.session.access_admin_app` | 0 / 99 Other | Reaching the admin console inside a session that already exists. The logon was `user.session.start`. |
+
+**Mapped to Base Event, not left out of the table.** Both produce the same object
+— same custom source, same prefix, same Glue table — so the difference is the
+alarm. An event type absent from the table increments
+`unmapped_event_type_total` on every occurrence (§7), and five known types
+ringing forever leave it no way to say *"Okta emitted something new"*. Activity
+99 rather than the fallback's 0 also separates a decision from an accident in the
+data itself: 0 means nothing recognised it, 99 means somebody looked.
+
+**A class count is not an event count.** These mappings put MFA steps in the same
+Glue table as logons, and that is safe only because `class_uid` and `activity_id`
+classify an event *together* — which is how OCSF is designed. Counting rows in
+`okta_authentication` without reading `activity_id` was never valid here: the
+table already holds two logon types and three OAuth ticket activities, so one
+sign-in has always produced several rows. Anything counting sign-ins filters
+`activity_id = 1`, and a test pins the set of event types allowed to carry it.
 - Every source field that is not mapped goes into `unmapped`. Populating
   `unmapped` honestly is a feature; silently discarding source fields is the
   signature of a toy connector.

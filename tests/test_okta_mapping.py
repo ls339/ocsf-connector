@@ -224,27 +224,74 @@ def test_table_entries_reach_the_event(
 
 
 @pytest.mark.parametrize(
-    "event_type",
+    ("event_type", "class_uid", "activity_id"),
     [
+        ("user.authentication.auth_via_mfa", 3002, 6),
+        ("user.authentication.verify", 3002, 6),
+        ("app.oauth2.token.grant.id_token", 3002, 99),
+        ("policy.evaluate_sign_on", 0, 99),
+        ("user.session.access_admin_app", 0, 99),
+    ],
+)
+def test_the_five_types_a_live_org_emits_are_classified_deliberately(
+    mapper: OktaOcsfMapper, event_type: str, class_uid: int, activity_id: int
+) -> None:
+    """The decision recorded in docs/SPEC.md §3.3, asserted as data.
+
+    A live org emits all five and none of them had a mapping, because the obvious
+    one was wrong: activity 1 Logon on any of the first three double-counts
+    sign-ins against user.session.start. The MFA pair is 6 Preauth -- the 1.3.0
+    vocabulary for proving identity before the ticket is granted, which is what an
+    MFA challenge is -- and an ID token is Other, being an assertion about who
+    somebody is rather than a ticket for reaching a service. The last two are not
+    authentication at all and stay in Base Event.
+    """
+    event = mapper.map(record(eventType=event_type))
+
+    assert (event.class_uid, event.body["activity_id"]) == (class_uid, activity_id)
+
+
+def test_no_new_mapping_added_a_second_logon_to_a_single_sign_in() -> None:
+    """The constraint the five were held up for, stated so it cannot quietly
+    stop being true: exactly two event types mean "somebody logged in", and one
+    sign-in produces one of them. Anything else arriving at activity 1 inflates
+    every count of logons in Athena, which is the number people look at first."""
+    mapper = OktaOcsfMapper()
+
+    logons = {
+        event_type
+        for event_type, (class_uid, activity_id) in mapper.event_rules().items()
+        if (class_uid, activity_id) == (3002, 1)
+    }
+
+    assert logons == {"user.session.start", "user.authentication.sso"}, (
+        "a sign-in to Okta and an SSO assertion to a downstream app are two "
+        "genuine logons; a third member here is almost certainly a step *within* "
+        "one of them"
+    )
+
+
+def test_a_decided_event_type_does_not_register_as_source_drift() -> None:
+    """Why the five are in the table rather than left to the fallback.
+
+    Both produce the same object for Base Event cases -- same source, same
+    prefix, same table -- so the difference is the alarm. Left out, every
+    occurrence increments unmapped_event_type_total, and five known types ringing
+    forever leave it no way to say "Okta emitted something new" (§7). Its own
+    mapper, because it asserts a count.
+    """
+    mapper = OktaOcsfMapper()
+
+    for event_type in (
         "user.authentication.auth_via_mfa",
         "user.authentication.verify",
         "app.oauth2.token.grant.id_token",
         "policy.evaluate_sign_on",
         "user.session.access_admin_app",
-    ],
-)
-def test_types_awaiting_a_decision_stay_at_base_event(
-    mapper: OktaOcsfMapper, event_type: str
-) -> None:
-    """These are unmapped on purpose, not by omission (docs/SPEC.md §3.3).
+    ):
+        mapper.map(record(eventType=event_type))
 
-    A live org emits all five. Mapping the first three to activity 1 Logon would
-    double-count sign-ins -- one user.session.start plus one auth_via_mfa reads
-    as two logons to anyone counting them. The last two have no home in OCSF
-    1.3.0's IAM category at all. This test exists so that nobody closes the gap
-    helpfully without making the decision first.
-    """
-    assert mapper.map(record(eventType=event_type)).class_uid == 0
+    assert mapper.unmapped_event_types == {}, "a decision is not drift"
 
 
 def test_no_event_carries_an_attribute_its_class_does_not_define(
@@ -363,7 +410,7 @@ def test_the_table_version_moves_with_the_table() -> None:
     )
     digest = hashlib.sha256(repr(entries).encode()).hexdigest()[:12]
 
-    assert (mapper.mapping_version, digest) == ("okta-2026.09.18", "5d4135444e9f"), (
+    assert (mapper.mapping_version, digest) == ("okta-2026.09.28", "a45367d78f02"), (
         "the table and its version must change together: update both, including "
         f"this assertion, to {mapper.mapping_version!r} / {digest!r}"
     )
@@ -410,6 +457,13 @@ def test_the_recorded_fixture_maps() -> None:
     mapper = OktaOcsfMapper()
     events = [mapper.map(raw) for raw in fixture_records()]
 
-    assert [event.class_uid for event in events] == [3002, 0]
+    assert [event.class_uid for event in events] == [3002, 3002]
+    assert [event.body["activity_id"] for event in events] == [1, 6], (
+        "a sign-in and the MFA step inside it: one Logon, one Preauth"
+    )
     assert events[0].time_ms < events[1].time_ms
-    assert mapper.unmapped_event_types["user.authentication.auth_via_mfa"] == 1
+    assert mapper.unmapped_event_types == {}, (
+        "both types in the fixture are mapped now. The drift counter's own "
+        "behaviour is test_an_unknown_event_type_degrades_and_counts's job, on a "
+        "type that really is unknown"
+    )
