@@ -659,6 +659,25 @@ the source is the only thing separating them. That makes "the store ignores the
 source it was given" a one-line test with half a batch missing as its failure,
 rather than a subtle prefix bug found in Athena.
 
+**[verified] live, 2026-09-28. The write path does what the commit order assumes.**
+`scripts/s3_probe.py` against a throwaway bucket, through `S3ObjectStore` rather
+than a hand-rolled PUT, so the evidence is about the connector:
+
+- A `HEAD` issued the moment `put` returned found the object at its full size. So
+  "durable when `put` returns" is a property this path really has, and the
+  cursor commit that follows it (§5) is not resting on a story.
+- The same source and key written twice left **one** object, holding the second
+  body. That is exactly-once at the sink (§5.2) confirmed against S3's own
+  overwrite semantics rather than against a fake that was written to agree.
+- A PUT that cannot succeed raised `NoSuchBucket` at the caller. Worth stating
+  separately because the call crosses `asyncio.to_thread`: an exception that
+  failed to cross it would be a swallowed delivery failure with a committed
+  cursor behind it.
+
+What this does not cover is everything registration adds — the per-source
+provider role, and whether the prefix derived here matches the reported
+`provider.location`.
+
 **What is built, and what waits for a registered source.** `sinks/s3.py` writes
 to any bucket with the caller's own credentials, which is all a plain bucket
 needs and is enough to prove the part that matters: that a PUT is durable when it
