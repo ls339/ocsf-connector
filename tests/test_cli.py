@@ -31,7 +31,7 @@ from ocsf_connector.sources.okta.auth import BearerAuth, DpopAuth
 from ocsf_connector.state.sqlite import SqliteStateStore
 from ocsf_connector.telemetry.base import NullMetrics
 from ocsf_connector.telemetry.otel import OtelMetrics
-from tests.test_config import MINIMAL, write
+from tests.test_config import ALL_ROLES, MINIMAL, S3_SINK, write
 
 # Real key material, reusing the pair that suite already generates at import
 # rather than paying for a third. It has to be real: DpopAuth derives the public
@@ -474,8 +474,7 @@ async def test_the_configured_kind_decides_where_objects_go(tmp_path: Path) -> N
     """The wire that makes delivery real. Everything upstream is identical for
     both kinds, so this is the only place that decides whether a run writes to a
     directory or to AWS."""
-    body = MINIMAL + '\nkind = "s3"\nbucket = "synthetic-lake"\n'
-    config = load_config(config_with_keys(tmp_path, body), env={})
+    config = load_config(config_with_keys(tmp_path, MINIMAL + S3_SINK), env={})
 
     async with httpx.AsyncClient() as client:
         parts = assemble(config, client)
@@ -483,6 +482,43 @@ async def test_the_configured_kind_decides_where_objects_go(tmp_path: Path) -> N
             store = parts.sink.store
             assert isinstance(store, S3ObjectStore)
             assert (store.bucket, store.region) == ("synthetic-lake", "us-east-1")
+        finally:
+            parts.close()
+
+
+async def test_configured_provider_roles_reach_the_store(tmp_path: Path) -> None:
+    """The wire for the part that makes delivery to a registered source possible
+    at all: without roles the store writes with the caller's own credentials,
+    which a Security Lake bucket does not accept (§4.2)."""
+    body = MINIMAL + S3_SINK + ALL_ROLES
+    config = load_config(config_with_keys(tmp_path, body), env={})
+
+    async with httpx.AsyncClient() as client:
+        parts = assemble(config, client)
+        try:
+            store = parts.sink.store
+            assert isinstance(store, S3ObjectStore)
+            assert store.roles is not None
+            assert store.roles.external_id == "synthetic-external-id"
+            assert store.roles.roles["okta_authentication"].endswith(
+                "AmazonSecurityLake-Provider-okta_authentication-us-east-1"
+            )
+        finally:
+            parts.close()
+
+
+async def test_a_bucket_without_roles_still_writes_as_the_caller(tmp_path: Path) -> None:
+    """The plain-bucket case, which is how the write path was verified before any
+    Security Lake existed."""
+    body = MINIMAL + S3_SINK
+    config = load_config(config_with_keys(tmp_path, body), env={})
+
+    async with httpx.AsyncClient() as client:
+        parts = assemble(config, client)
+        try:
+            store = parts.sink.store
+            assert isinstance(store, S3ObjectStore)
+            assert store.roles is None
         finally:
             parts.close()
 

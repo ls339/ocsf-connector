@@ -720,11 +720,30 @@ naming table are held together by `tests/test_terraform_sources.py`, which reads
 the HCL as text: the two cannot see each other, and their disagreement would show
 up as objects arriving where no Glue table points.
 
-Three things wait for a registered source, because each needs a value only
-registration produces: assuming the per-source provider role (one method,
-`_client_for`, so nothing above it changes), the check that the prefix derived
-here matches the reported `provider.location`, and whether an in-sink retry is
-worth having, which wants real failures rather than a guess.
+**Provider roles are implemented, and unverified.** `ProviderRoles` assumes
+`AmazonSecurityLake-Provider-{source}-{region}` once per source, presenting the
+external id those roles trust, and re-assumes at 80% of the credentials'
+lifetime — read from the STS response rather than assumed to be an hour, since a
+role's maximum session duration is the role's own business. The same margin as
+the Okta token (§2.4), for the same reason: with no refresh token a 403 is
+already a failed flush. If credentials expire anyway, the PUT raises, the cursor
+does not move, and the replay mints fresh ones, which is the recovery every other
+failure here gets.
+
+The ARNs come from configuration, filled from `terraform output provider_roles`,
+and are deliberately not derived: AWS documents the role *name*, but an ARN may
+carry a path, and a guessed path fails at the first PUT rather than at startup.
+Configuration refuses a map that does not name exactly the sources this connector
+writes — a missing role is a class with nowhere to go, and a spare one usually
+means `source_name` disagrees between the connector and the terraform.
+
+A source with no role raises rather than writing somewhere plausible. That keeps
+the cursor where it is, so the batch replays once the source is registered.
+
+Two things still wait for a registered source, because each needs a value only
+registration produces: the check that the prefix derived here matches the
+reported `provider.location`, and whether an in-sink retry earns its keep, which
+wants real failures rather than a guess.
 
 **Base Event has nowhere sanctioned to go.** Invariant 4 degrades an unknown
 `eventType` to Base Event with the source record under `unmapped`, and Base Event

@@ -98,9 +98,10 @@ is verified against a real one — a PUT durable when it returns, a replayed wri
 leaving one object, an error reaching the caller (`scripts/s3_probe.py`, SPEC
 §4.2). What is unproven is everything registration adds. `terraform/` registers
 the seven custom sources and has never been applied, because Security Lake is not
-enabled anywhere yet; and a registered source is written by a role Security Lake
-creates per source, which the store does not assume yet. The source, auth and
-tail paths have run against a live org.
+enabled anywhere yet. A registered source is written by a role Security Lake
+creates per source; the store assumes those roles and renews them at 80% of their
+lifetime, and that path has never met a real one. The source, auth and tail paths
+have run against a live org.
 
 ## Design
 

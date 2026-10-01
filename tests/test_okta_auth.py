@@ -175,11 +175,28 @@ async def test_each_mint_signs_a_fresh_single_use_assertion(
     auth = BearerAuth(credentials(client, clock))
 
     await auth.headers("GET", CURSOR)
-    clock.advance(3600 * RENEWAL_MARGIN + 1)
+    clock.advance(2881)  # 80% of 3600, plus a second. Literal -- see below.
     await auth.headers("GET", CURSOR)
 
     identifiers = {decode_assertion(call.request)["jti"] for call in route.calls}
     assert len(identifiers) == 2, "an assertion was replayed"
+
+
+def test_the_renewal_margin_leaves_room_rather_than_renewing_at_expiry() -> None:
+    """The margin is pinned literally, and so are the clock advances above.
+
+    Found by mutation while building the Security Lake provider roles, which renew
+    on the same principle: every timing in this file used to be computed as
+    ``3600 * RENEWAL_MARGIN ± 1``, so setting the margin to 1.0 -- asking for a new
+    token at the instant the old one dies, which means presenting an expired token
+    on any request slow enough -- passed all fifteen tests here. An expectation
+    derived from the constant under test cannot fail when the constant is wrong
+    (the third mechanism in SPEC §5.4's sense).
+
+    0.8 is the value verified live on 2026-09-21, renewing at 80.0% of a
+    3600-second lifetime.
+    """
+    assert RENEWAL_MARGIN == 0.8
 
 
 async def test_a_token_is_reused_until_the_renewal_margin(
@@ -190,7 +207,7 @@ async def test_a_token_is_reused_until_the_renewal_margin(
     auth = BearerAuth(credentials(client, clock))
 
     await auth.headers("GET", CURSOR)
-    clock.advance(3600 * RENEWAL_MARGIN - 1)
+    clock.advance(2879)  # just inside the margin
     await auth.headers("GET", CURSOR)
     assert route.call_count == 1, "renewed early"
 
@@ -273,7 +290,7 @@ async def test_dpop_answers_the_nonce_challenge_then_reuses_the_nonce(
     assert retry["htm"] == "POST" and retry["htu"] == TOKEN_URL
     assert "ath" not in retry, "the token request has no token to bind to yet"
 
-    clock.advance(3600 * RENEWAL_MARGIN + 1)
+    clock.advance(2881)  # 80% of 3600, plus a second. Literal -- see below.
     await auth.headers("GET", CURSOR)
     assert route.call_count == 3, "a cached nonce should avoid a second challenge"
     assert proof_from(route.calls.last.request)[1]["nonce"] == NONCE

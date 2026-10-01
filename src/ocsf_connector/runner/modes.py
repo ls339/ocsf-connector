@@ -38,7 +38,7 @@ from ocsf_connector.mapping.okta import OktaOcsfMapper
 from ocsf_connector.runner.loop import RunStats, run
 from ocsf_connector.runner.shutdown import stop_on_signals
 from ocsf_connector.sinks.objects import LocalObjectStore, ObjectStore
-from ocsf_connector.sinks.s3 import S3ObjectStore
+from ocsf_connector.sinks.s3 import ProviderRoles, S3ObjectStore
 from ocsf_connector.sinks.security_lake import SecurityLakeSink
 from ocsf_connector.sources.okta.auth import BearerAuth, DpopAuth, OktaClientCredentials
 from ocsf_connector.sources.okta.source import OktaSource
@@ -146,7 +146,17 @@ def _objects(config: Config) -> ObjectStore:
         # Checked by SinkConfig; asserted rather than defaulted, because a
         # default bucket is a bucket somebody else owns.
         assert config.sink.bucket is not None
-        return S3ObjectStore(bucket=config.sink.bucket, region=config.sink.region)
+        roles = None
+        if config.sink.provider_roles:
+            # Also checked by SinkConfig: roles and an external id come together,
+            # and their names cover exactly the sources this connector writes.
+            assert config.sink.external_id is not None
+            roles = ProviderRoles(
+                roles=config.sink.provider_roles,
+                external_id=config.sink.external_id,
+                region=config.sink.region,
+            )
+        return S3ObjectStore(bucket=config.sink.bucket, region=config.sink.region, roles=roles)
     return LocalObjectStore(config.sink.directory)
 
 

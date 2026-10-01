@@ -52,6 +52,27 @@ directory = "out"
 # the way every other AWS tool finds them -- never from this file.
 # bucket = "aws-security-data-lake-..."
 
+# Writing a REGISTERED Security Lake custom source needs the role Security Lake
+# created for it: one per source, each able to write only that source's prefix.
+# Fill these from `terraform output provider_roles` -- they are not derived,
+# because an ARN may carry a path and a guessed path fails at the first PUT. The
+# external id is what those roles trust; set it from the environment
+# (OCSF_SINK_EXTERNAL_ID) rather than writing it here.
+#
+# Leave both out to write with the caller's own credentials, which is what a
+# plain bucket accepts and a registered source does not.
+#
+# external_id = "set-me-from-the-environment"
+#
+# [sink.provider_roles]
+# okta_base_event = "arn:aws:iam::...:role/AmazonSecurityLake-Provider-okta_base_event-us-east-1"
+# okta_account_change = "..."
+# okta_authentication = "..."
+# okta_session_authz = "..."
+# okta_entity = "..."
+# okta_user_access = "..."
+# okta_group = "..."
+
 # Prefixes the per-class custom source names: okta_authentication,
 # okta_account_change, and so on -- Security Lake registers one source per class.
 #

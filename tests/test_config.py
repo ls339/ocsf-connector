@@ -70,6 +70,77 @@ def test_the_destination_can_be_switched_from_the_environment(tmp_path: Path) ->
     assert (config.sink.kind, config.sink.bucket) == ("s3", "synthetic-lake")
 
 
+S3_SINK = """
+kind = "s3"
+bucket = "synthetic-lake"
+"""
+
+PROVIDER_ROLE = "arn:aws:iam::000000000000:role/AmazonSecurityLake-Provider-{source}-us-east-1"
+"""Shaped like a real one with a synthetic account. The path is the part this
+connector does not guess -- real ones come from terraform output (§4.2)."""
+
+WRITTEN_SOURCES = (
+    "okta_base_event",
+    "okta_account_change",
+    "okta_authentication",
+    "okta_session_authz",
+    "okta_entity",
+    "okta_user_access",
+    "okta_group",
+)
+
+ALL_ROLES = '\nexternal_id = "synthetic-external-id"\n\n[sink.provider_roles]\n' + "".join(
+    f'{source} = "{PROVIDER_ROLE.format(source=source)}"\n' for source in WRITTEN_SOURCES
+)
+
+
+def test_provider_roles_load_for_every_source_the_connector_writes(tmp_path: Path) -> None:
+    config = load_config(write(tmp_path, MINIMAL + S3_SINK + ALL_ROLES), env={}).sink
+
+    assert config.external_id == "synthetic-external-id"
+    assert set(config.provider_roles) == set(WRITTEN_SOURCES)
+
+
+def test_a_missing_provider_role_is_refused(tmp_path: Path) -> None:
+    """A class with no role has nowhere to write, and the sink would discover it
+    at the first flush that happened to carry that class -- which could be days
+    in (§4.2)."""
+    short = ALL_ROLES.replace(f'okta_group = "{PROVIDER_ROLE.format(source="okta_group")}"\n', "")
+
+    with pytest.raises(ValidationError, match="Missing"):
+        load_config(write(tmp_path, MINIMAL + S3_SINK + short), env={})
+
+
+def test_a_role_for_a_source_this_connector_does_not_write_is_refused(tmp_path: Path) -> None:
+    """Usually means source_name here and in terraform disagree, which would
+    otherwise show up as objects written under a prefix nothing points at."""
+    spare = ALL_ROLES + 'okta_dns = "arn:aws:iam::000000000000:role/whatever"\n'
+
+    with pytest.raises(ValidationError, match="Not written by this connector"):
+        load_config(write(tmp_path, MINIMAL + S3_SINK + spare), env={})
+
+
+def test_roles_without_an_external_id_are_refused(tmp_path: Path) -> None:
+    """The roles trust a principal presenting that id. Without it every
+    assume-role is refused, and the first symptom is a failed flush."""
+    without = ALL_ROLES.replace('external_id = "synthetic-external-id"\n', "")
+
+    with pytest.raises(ValidationError, match=r"needs sink\.external_id"):
+        load_config(write(tmp_path, MINIMAL + S3_SINK + without), env={})
+
+
+def test_an_external_id_with_no_roles_is_refused(tmp_path: Path) -> None:
+    """It would never be presented to anything, so its presence means somebody
+    believes this run assumes a role when it does not."""
+    with pytest.raises(ValidationError, match="never presented"):
+        load_config(write(tmp_path, MINIMAL + S3_SINK + '\nexternal_id = "synthetic"\n'), env={})
+
+
+def test_provider_roles_beside_a_local_sink_are_refused(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="nothing assumes them"):
+        load_config(write(tmp_path, MINIMAL + ALL_ROLES), env={})
+
+
 def test_a_source_name_that_cannot_be_registered_is_a_configuration_error(
     tmp_path: Path,
 ) -> None:

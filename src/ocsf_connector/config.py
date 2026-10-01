@@ -27,7 +27,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from ocsf_connector.sinks.naming import check_source_names
+from ocsf_connector.sinks.naming import all_source_names, check_source_names
 
 ENV_OVERRIDES: dict[str, tuple[str, ...]] = {
     "OCSF_OKTA_ORG_URL": ("okta", "org_url"),
@@ -39,6 +39,7 @@ ENV_OVERRIDES: dict[str, tuple[str, ...]] = {
     "OCSF_SINK_KIND": ("sink", "kind"),
     "OCSF_SINK_DIRECTORY": ("sink", "directory"),
     "OCSF_SINK_BUCKET": ("sink", "bucket"),
+    "OCSF_SINK_EXTERNAL_ID": ("sink", "external_id"),
     "OCSF_SINK_REGION": ("sink", "region"),
     "OCSF_SINK_ACCOUNT_ID": ("sink", "account_id"),
     "OCSF_SINK_SOURCE_NAME": ("sink", "source_name"),
@@ -110,6 +111,17 @@ class SinkConfig(Strict):
     """Where ``s3`` writes. Required by that kind, and refused by the other --
     a bucket named beside ``kind = "local"`` means someone believes this run is
     delivering when it is not."""
+    provider_roles: dict[str, str] = Field(default_factory=dict)
+    """Custom source name -> the role Security Lake created to write it.
+
+    From ``terraform output provider_roles``, not derived: AWS documents the role
+    name but an ARN may carry a path, and a guessed path fails at the first PUT
+    rather than at startup (§4.2). Empty means the caller's own credentials, which
+    is what a plain bucket accepts and a registered source does not."""
+    external_id: str | None = None
+    """The external id those roles trust. Not a secret in AWS's sense, and still
+    the thing that stops whoever learns a role ARN from assuming it, so it belongs
+    in the environment rather than in a file committed anywhere."""
     source_name: str = "okta"
     """Prefixes the per-class custom source names: okta_authentication, ... (§4.1)."""
     region: str
@@ -143,6 +155,32 @@ class SinkConfig(Strict):
         """
         if self.kind == "s3" and not self.bucket:
             raise ValueError('sink.kind = "s3" needs sink.bucket: there is nowhere to put objects')
+        if self.provider_roles and self.kind != "s3":
+            raise ValueError(
+                'sink.provider_roles is set but sink.kind is not "s3", so nothing assumes '
+                "them. Delete them, or deliver"
+            )
+        if self.provider_roles and not self.external_id:
+            raise ValueError(
+                "sink.provider_roles needs sink.external_id: the roles trust a principal "
+                "presenting that id, and without it every assume-role is refused (§4.2)"
+            )
+        if self.external_id and not self.provider_roles:
+            raise ValueError(
+                "sink.external_id is set but no sink.provider_roles are, so it is never "
+                "presented to anything"
+            )
+        expected = all_source_names(self.source_name)
+        if self.provider_roles and set(self.provider_roles) != expected:
+            missing = sorted(expected - set(self.provider_roles))
+            spare = sorted(set(self.provider_roles) - expected)
+            raise ValueError(
+                "sink.provider_roles must name every custom source this connector "
+                f"writes and no others. Missing: {missing or 'none'}. Not written by "
+                f"this connector: {spare or 'none'}. A missing role is a class whose "
+                "objects have nowhere to go; a spare one usually means source_name here "
+                "and in terraform disagree (§4.2)"
+            )
         if self.kind == "local" and self.bucket is not None:
             raise ValueError(
                 'sink.bucket is set but sink.kind = "local", so nothing is delivered to it. '

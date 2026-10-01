@@ -63,6 +63,17 @@ def source_name(prefix: str, class_uid: int) -> str:
     return f"{prefix}_{CLASS_SOURCES[class_uid]}"
 
 
+def all_source_names(prefix: str) -> frozenset[str]:
+    """Every custom source this connector may write, under ``prefix``.
+
+    What registration has to have created, and therefore what a configured map of
+    provider roles has to cover. Derived here rather than written out again, so a
+    new OCSF class cannot acquire a source name without acquiring the obligation
+    to have a role for it.
+    """
+    return frozenset(source_name(prefix, class_uid) for class_uid in CLASS_SOURCES)
+
+
 def check_source_names(prefix: str) -> None:
     """Refuse a prefix that cannot be registered, before anything is written.
 
