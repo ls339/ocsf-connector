@@ -709,10 +709,16 @@ default is `legacy`, and there is no retry loop beyond it: a failed flush leaves
 the cursor where it was, so the batch replays into the same key, which is the
 recovery a crash already gets.
 
-`terraform/` registers the sources: one `aws_securitylake_custom_log_source` per
-class, the Glue crawler role the API path requires (the console creates an
-equivalent itself), and outputs carrying each source's reported location and
-provider role. It deliberately does not manage `aws_securitylake_data_lake` —
+`terraform/` registers the sources across two accounts, because that is where
+they belong: `log-archive/` holds the delegated administrator's lake, the seven
+`aws_securitylake_custom_log_source` resources and the Glue crawler role the API
+path requires, and `security-tooling/` holds the role the connector runs as,
+whose only privilege is assuming the seven roles registration creates. The
+organization's management account holds neither — AWS's Security Reference
+Architecture runs no workloads there, and **[verified] 2026-10-03** it refuses to
+be the Security Lake delegated administrator at all. Separate root modules with
+separate state, because the accounts are reached with different credentials and
+one state file spanning both would mean one identity able to change both. It deliberately does not manage `aws_securitylake_data_lake` —
 enabling a lake is slow, creates buckets and Lake Formation tables, and in an
 Organization belongs to the delegated administrator, so it should not happen as a
 side effect of registering a source. The class suffixes there and the sink's

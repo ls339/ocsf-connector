@@ -97,8 +97,10 @@ variables is one table in `src/ocsf_connector/config.py`.
 is verified against a real one — a PUT durable when it returns, a replayed write
 leaving one object, an error reaching the caller (`scripts/s3_probe.py`, SPEC
 §4.2). What is unproven is everything registration adds. `terraform/` registers
-the seven custom sources and has never been applied, because Security Lake is not
-enabled anywhere yet. A registered source is written by a role Security Lake
+the seven custom sources across the two accounts AWS's reference architecture puts
+them in, and has never been applied, because Security Lake is not enabled anywhere
+yet — [`docs/RUNBOOK.md`](docs/RUNBOOK.md) is the procedure, with the irreversible
+steps marked. A registered source is written by a role Security Lake
 creates per source; the store assumes those roles and renews them at 80% of their
 lifetime, and that path has never met a real one. The source, auth and tail paths
 have run against a live org.
@@ -120,7 +122,9 @@ src/ocsf_connector/
   runner/           tail and backfill
   telemetry/        ingest lag, error rate, unmapped-type drift
 tests/fixtures/     recorded API pages -- all synthetic
-terraform/          Security Lake custom source registration (one source per class)
+terraform/
+  log-archive/      Security Lake custom sources, one per class, and the crawler role
+  security-tooling/ the role the connector runs as, and its one privilege
 ```
 
 ## Data handling

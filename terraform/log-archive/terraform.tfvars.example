@@ -1,0 +1,26 @@
+# Copy to terraform.tfvars and fill in. That file is gitignored: account ids and
+# the external id are tenant identifiers, and this is a public repo (CLAUDE.md
+# invariant 5). Same reasoning as config.toml at the root.
+
+region      = "us-east-1"
+account_id  = "000000000000" # the log-archive account
+aws_profile = "log-archive"
+
+lake_bucket = "aws-security-data-lake-us-east-1-REPLACE_ME"
+
+# Omit for an SSE-S3 lake. With a customer-managed key, the Glue crawler needs to
+# be able to decrypt what it crawls.
+# lake_kms_key_arn = "arn:aws:kms:us-east-1:000000000000:key/REPLACE_ME"
+
+# Must equal sink.source_name in the connector's config.toml.
+source_name_prefix = "okta"
+
+# The ROLE the connector runs as, in the security-tooling account -- output
+# `connector_role_arn` from ../security-tooling. Not an account id: that would
+# trust every principal in the account holding sts:AssumeRole. Effectively
+# permanent once applied, since there is no update-custom-log-source.
+provider_principal = "arn:aws:iam::000000000000:role/ocsf-connector"
+
+# Set from the environment instead of writing it here:
+#   export TF_VAR_provider_external_id="$(openssl rand -hex 16)"
+# provider_external_id = "..."

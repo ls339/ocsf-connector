@@ -34,14 +34,35 @@ resource "aws_iam_role_policy" "crawler_objects" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Sid    = "S3WriteRead"
-      Effect = "Allow"
-      Action = [
-        "s3:GetObject",
-        "s3:PutObject",
-      ]
-      Resource = ["arn:aws:s3:::${var.lake_bucket}/*"]
-    }]
+    Statement = concat(
+      [{
+        Sid    = "S3WriteRead"
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+        ]
+        Resource = ["arn:aws:s3:::${var.lake_bucket}/*"]
+      }],
+      # Under a customer-managed key the crawler cannot read the objects it is
+      # meant to describe, and the failure is quiet: the crawler runs, finds
+      # nothing it can decrypt, and leaves the table empty. Security Lake grants
+      # the *provider* roles their KMS permissions itself; this role is ours.
+      # The encryption-context condition is the shape AWS's own example uses.
+      var.lake_kms_key_arn == null ? [] : [{
+        Sid    = "LakeKey"
+        Effect = "Allow"
+        Action = [
+          "kms:GenerateDataKey",
+          "kms:Decrypt",
+        ]
+        Resource = [var.lake_kms_key_arn]
+        Condition = {
+          StringLike = {
+            "kms:EncryptionContext:aws:s3:arn" = "arn:aws:s3:::${var.lake_bucket}"
+          }
+        }
+      }],
+    )
   })
 }

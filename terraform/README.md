@@ -1,72 +1,74 @@
-# Registering the Security Lake custom sources
+# Terraform: the three accounts this needs
 
-One custom source per OCSF class, the Glue crawler role the API path requires,
-and the outputs that tell the connector where to write. Seven sources, well
-inside the 50-per-account cap. Design and the verified AWS facts behind all of
-it: [`../docs/SPEC.md`](../docs/SPEC.md) §4, §4.1, §4.2.
+Two root modules, one per account, with separate state. They are separate because
+the accounts are reached with different credentials — one state file spanning both
+would mean one identity able to change both, which is the thing the layout exists
+to avoid.
 
-## What this does not do
-
-**It does not enable Security Lake.** `aws_securitylake_data_lake` is absent
-deliberately: enabling a lake creates buckets, Lake Formation tables and
-crawlers, takes up to an hour, and in an Organization is the delegated
-administrator's decision — not something a registration config should do as a
-side effect of `apply`. If the lake does not exist in `var.region`, the API
-refuses these resources and says so.
-
-**It does not create the provider roles.** Security Lake creates
-`AmazonSecurityLake-Provider-{source}-{region}` itself, one per source, with the
-`AmazonSecurityLakePermissionsBoundary` managed policy as their boundary. This
-only names who may assume them, through `provider_identity`.
-
-## Prerequisites
-
-1. Security Lake enabled in the target Region. In an Organization that means a
-   delegated administrator is registered for `securitylake.amazonaws.com`;
-   `aws organizations list-delegated-administrators --service-principal
-   securitylake.amazonaws.com` tells you whether one is.
-2. Credentials for an identity that may register a source:
-   `glue:CreateCrawler`, `glue:CreateDatabase`, `glue:CreateTable`,
-   `glue:StopCrawlerSchedule`, `iam:GetRole`, `iam:PutRolePolicy`,
-   `iam:DeleteRolePolicy`, `iam:PassRole`, `lakeformation:RegisterResource`,
-   `lakeformation:GrantPermissions`, `s3:ListBucket`, `s3:PutObject` — and
-   `kms:CreateGrant`, `kms:DescribeKey`, `kms:GenerateDataKey` if the lake uses a
-   customer-managed key.
-3. The lake's bucket name, for the crawler role's policy.
-
-## Running it
-
-```sh
-cp terraform.tfvars.example terraform.tfvars   # then fill it in
-terraform init
-terraform plan
-terraform apply
+```
+log-archive/        the Security Lake delegated administrator. The data lake's
+                    custom sources (one per OCSF class), and the Glue crawler
+                    role the API path requires.
+security-tooling/   the IAM role the connector runs as, and its one privilege:
+                    permission to assume the per-source provider roles.
 ```
 
-`source_name_prefix` **must equal `sink.source_name`** in the connector's
-`config.toml`. The name is in the S3 prefix the connector writes and in the Glue
-table a query binds to, so a mismatch means objects arriving where no registered
-source points. `tests/test_terraform_sources.py` holds the class suffixes here to
-the sink's own naming table, but nothing can check the prefix for you.
+Nothing here belongs in the organization's **management account**, which under
+AWS's Security Reference Architecture runs no workloads. AWS enforces part of
+this itself: the management account cannot be the Security Lake delegated
+administrator.
 
-## After applying
+Design and the verified AWS facts behind all of it:
+[`../docs/SPEC.md`](../docs/SPEC.md) §4, §4.1, §4.2. The procedure for standing it
+up, in order, with the irreversible steps marked:
+[`../docs/RUNBOOK.md`](../docs/RUNBOOK.md).
 
-Read `terraform output source_locations` and compare each against the prefix the
-connector derives, `ext/{source}/`. They should agree; §4.2 explains why that is
-checked rather than assumed. `terraform output provider_roles` gives the roles the
-connector will assume once it does — it writes with the caller's own credentials
-today, which cannot write a registered source.
+## What these modules do not do
+
+**They do not enable Security Lake.** `aws_securitylake_data_lake` is absent
+deliberately: enabling a lake creates buckets, Lake Formation tables and
+crawlers, takes up to an hour, and is a decision about an organization rather
+than a side effect of registering a source. The runbook covers it.
+
+**They do not create the provider roles.** Security Lake creates
+`AmazonSecurityLake-Provider-{source}-{region}` itself, one per source, bounded
+by the `AmazonSecurityLakePermissionsBoundary` managed policy. These modules only
+name who may assume them.
+
+**They do not create the state bucket.** A backend cannot bootstrap its own
+storage. Both backends are partial — `bucket` and `key` are passed at `init` —
+because those name real buckets and this file is public.
+
+## Three applies, in this order
+
+The ordering is inherent, not an accident of layout: the connector's role must
+exist before a custom source can be registered to trust it, and the roles those
+sources produce do not exist until they are registered.
+
+1. **`security-tooling`** with `provider_role_arns = []`. Creates the connector's
+   role, which can do nothing yet.
+2. **`log-archive`** with `provider_principal` set to that role's ARN. Registers
+   the seven sources. This is the irreversible one: there is no
+   `update-custom-log-source`, and deleting a source leaves its Glue crawler
+   behind, so the principal and the source names are effectively permanent.
+3. **`security-tooling`** again, with `provider_role_arns` filled from
+   `terraform output provider_roles`. Grants the role its one privilege.
+
+## Afterwards
+
+Compare `terraform output source_locations` against the prefix the connector
+derives, `ext/{source}/`. They should agree; §4.2 explains why that is checked
+rather than assumed.
 
 ## Two things to know about state
 
-**State holds the external ID.** It is marked `sensitive` so it stays out of plan
-output, but Terraform state is not encrypted at rest. The local state file is
-gitignored; anything shared belongs in a remote backend with encryption and
-restricted access, which is deliberately not configured here because the right
-backend is a deployment decision.
+**State holds the external id.** It is marked `sensitive`, so it stays out of
+plan output, but Terraform state is not encrypted by Terraform. `encrypt = true`
+on the backend is why the bucket must have encryption, and why the state bucket
+should be as restricted as the lake.
 
 **A deleted source leaves its crawler behind.** AWS: Security Lake "can't delete
 or update existing crawlers in your account. If you delete a custom source, we
 recommend deleting the associated crawler if you plan to create a custom source
-with the same name in the future." So `terraform destroy` is not a clean
-reversal, and reusing a name after destroying it can collide with the orphan.
+with the same name in the future." So `destroy` is not a clean reversal, and
+reusing a name after destroying it can collide with the orphan.

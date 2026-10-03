@@ -21,7 +21,7 @@ from pathlib import Path
 
 from ocsf_connector.sinks.naming import CLASS_SOURCES
 
-SOURCES_TF = Path(__file__).resolve().parent.parent / "terraform" / "sources.tf"
+SOURCES_TF = Path(__file__).resolve().parent.parent / "terraform" / "log-archive" / "sources.tf"
 
 ENTRY = re.compile(r"^\s{4}(?P<suffix>\w+)\s*=\s*(?P<value>null|\"[A-Z_0-9]+\")\s*$", re.MULTILINE)
 
@@ -45,7 +45,8 @@ def test_the_terraform_registers_exactly_the_sources_the_sink_writes() -> None:
 
     assert found["authentication"] == "AUTHENTICATION", "a floor: the map parsed at all"
     assert set(found) == set(CLASS_SOURCES.values()), (
-        "terraform/sources.tf and sinks/naming.py disagree about which custom sources exist"
+        "terraform/log-archive/sources.tf and sinks/naming.py disagree about which "
+        "custom sources exist"
     )
 
 
