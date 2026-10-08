@@ -39,7 +39,6 @@ So this assumes a consumer already has:
 | **Security Lake enabled** in the target Region | with its delegated administrator, encryption key and retention already decided |
 | an IaC pipeline | with remote state, which is why both backends here are partial |
 | a Glue crawler role | *optionally* — supply `crawler_role_arn` and we use theirs |
-| a permissions boundary convention | *optionally* — supply `permissions_boundary` and the connector's role carries it |
 | an Okta tenant | with an API Services app scoped to `okta.logs.read` |
 
 And adds only:
