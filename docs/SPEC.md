@@ -746,12 +746,46 @@ means `source_name` disagrees between the connector and the terraform.
 A source with no role raises rather than writing somewhere plausible. That keeps
 the cursor where it is, so the batch replays once the source is registered.
 
-Two things still wait for a registered source, because each needs a value only
-registration produces: the check that the prefix derived here matches the
-reported `provider.location`, and whether an in-sink retry earns its keep, which
-wants real failures rather than a guess.
+One thing still waits for real traffic: whether an in-sink retry earns its keep,
+which wants real failures rather than a guess. The prefix check is done — see the
+verified note above.
 
-**Base Event has nowhere sanctioned to go.** Invariant 4 degrades an unknown
+**[verified] live, 2026-10-08. Registration, and four things it settled.**
+Seven custom sources registered against a real data lake, and the questions this
+document had been carrying came back answered:
+
+- **The derived prefix is right.** Every reported `provider.location` is
+  `s3://{bucket}/ext/{source}/`, matching what `sinks/s3.py` builds, for all
+  seven. The check this section asks for has been performed and passes.
+- **`provider_principal` cannot be a role ARN.** The API accepts only a 12-digit
+  account id or a service principal:
+  `^([0-9]{12}|[a-z0-9\.\-]*\.(amazonaws|amazon)\.com)$`. So the trust is
+  account-scoped whether you want it or not. What carries the weight instead is
+  that the caller must also hold `sts:AssumeRole` on the provider role ARN —
+  granted to the connector's role alone — and that the external id is required on
+  every assume. The dedicated tooling account matters more than expected here:
+  "any principal in this account" is a small, purpose-built set.
+- **AWS strips the underscores** when it names the role:
+  `okta_session_authz` becomes
+  `AmazonSecurityLake-Provider-oktasessionauthz-us-east-1`. Deriving those ARNs
+  rather than reading them from registration would have failed at the first PUT
+  against a role that does not exist.
+- **The provider role can write and cannot delete.** `PutObject` succeeds,
+  `DeleteObject` is refused — *"no identity-based policy allows the
+  s3:DeleteObject action"*. A fully compromised connector can add objects to the
+  lake and cannot destroy one, which is the property an audit trail wants and is
+  AWS's design rather than ours. Objects land encrypted with the configured
+  customer-managed key (`ServerSideEncryption: aws:kms`).
+
+**Base Event has nowhere sanctioned to go** — or so this section said until
+2026-10-08, when `okta_base_event` registered successfully **with no event
+classes declared**. `eventClasses` is genuinely optional, so degraded records get
+a registered source, a prefix and a Glue table like every other class. The
+fallback reasoning below is kept because it documents what would have been true
+otherwise, and because the Athena side is still unverified: a source registered
+without a class may yet behave differently once a crawler has run.
+
+**The original reasoning, now superseded by that result.** Invariant 4 degrades an unknown
 `eventType` to Base Event with the source record under `unmapped`, and Base Event
 is absent from the list of event classes a custom source may declare.
 `eventClasses` is optional, so a source registered without one may accept the

@@ -251,10 +251,20 @@ crawler behind — so the **source names** and the **provider principal** are
 effectively permanent here. Supply `crawler_role_arn` if you already have a
 crawler role; omit it and one is created.
 
-Watch for one thing: **`okta_base_event` declares no event class**, because Base
-Event is absent from the list AWS accepts while unknown Okta event types degrade
-to it. `eventClasses` is optional, so this apply answers whether a source may be
-registered without one — issue `pet.11.3`, and this is the experiment.
+**[verified 2026-10-08]** `provider_principal` must be a **12-digit account id**.
+A role ARN is rejected outright:
+
+> [Invalid request body] [ECMA 262 regex
+> `^([0-9]{12}|[a-z0-9\.\-]*\.(amazonaws|amazon)\.com)$` does not match input
+> string "arn:aws:iam::…:role/ocsf-connector"]
+
+The failure is clean — nothing is registered — but it is worth knowing before you
+plan the trust model around a role.
+
+**[verified]** `okta_base_event`, which declares no event class, **registers
+successfully**. Base Event is absent from the list AWS accepts, but `eventClasses`
+is optional and a source without one is allowed, so degraded records get a
+prefix and a table like any other class.
 
 Keep the external id. The connector needs the same value and nothing prints it
 back.
@@ -266,6 +276,29 @@ cd terraform/log-archive && terraform output -json provider_roles
 cd ../security-tooling   # put those ARNs in provider_role_arns
 terraform apply
 ```
+
+**[verified 2026-10-08]** Read those ARNs, never construct them. AWS strips the
+underscores from the source name: `okta_session_authz` becomes
+`AmazonSecurityLake-Provider-oktasessionauthz-us-east-1`. A derived ARN points at
+a role that does not exist, and the failure surfaces as a permissions error at
+the first PUT.
+
+**Prove the chain before running the connector.** Assume the connector's role,
+assume a provider role from it with the external id, and write an object:
+
+```sh
+aws sts assume-role --role-arn <connector role> --role-session-name check --profile security-tooling
+# with those credentials:
+aws sts assume-role --role-arn <a provider role> --role-session-name check \
+  --external-id "$OCSF_SINK_EXTERNAL_ID"
+# with those:
+echo check | aws s3 cp - s3://<lake bucket>/ext/<source>/region=…/accountId=…/eventDay=…/check
+```
+
+**[verified]** the object lands with `ServerSideEncryption: aws:kms`, and
+**`DeleteObject` is refused** — the provider role writes and cannot delete, so a
+compromised connector cannot destroy data it has already delivered. That also
+means an admin identity has to remove anything you write as a check.
 
 ## B5. Check the prefix agrees
 

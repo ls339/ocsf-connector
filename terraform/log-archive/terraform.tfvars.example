@@ -15,11 +15,10 @@ lake_bucket = "aws-security-data-lake-us-east-1-REPLACE_ME"
 # Must equal sink.source_name in the connector's config.toml.
 source_name_prefix = "okta"
 
-# The ROLE the connector runs as, in the security-tooling account -- output
-# `connector_role_arn` from ../security-tooling. Not an account id: that would
-# trust every principal in the account holding sts:AssumeRole. Effectively
-# permanent once applied, since there is no update-custom-log-source.
-provider_principal = "arn:aws:iam::000000000000:role/ocsf-connector"
+# The security-tooling ACCOUNT id. The API refuses a role ARN -- see the
+# variable's description. Effectively permanent once applied, since there is no
+# update-custom-log-source.
+provider_principal = "000000000000"
 
 # Set from the environment instead of writing it here:
 #   export TF_VAR_provider_external_id="$(openssl rand -hex 16)"

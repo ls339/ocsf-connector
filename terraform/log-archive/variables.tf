@@ -84,16 +84,38 @@ variable "crawler_role_arn" {
 
 variable "provider_principal" {
   description = <<-EOT
-    The identity permitted to write these sources: the ARN of the role the
-    connector runs as, in the security-tooling account.
+    The AWS account permitted to write these sources: the security-tooling
+    account, as a 12-digit id.
 
-    A role ARN rather than an account id, deliberately. An account id trusts any
-    principal in that account that also holds sts:AssumeRole, which is a much
-    larger set than "the connector". There is no update-custom-log-source, and
-    deleting a source leaves its Glue crawler behind, so this value is effectively
-    permanent once applied.
+    An account id and not a role ARN, because the API refuses anything else.
+    Verified 2026-10-08 by being rejected:
+
+      [Invalid request body] [ECMA 262 regex
+      "^([0-9]{12}|[a-z0-9\.\-]*\.(amazonaws|amazon)\.com)$"
+      does not match input string "arn:aws:iam::...:role/ocsf-connector"]
+
+    So the trust is account-scoped, and the connector's role cannot be named
+    here. Two things carry the weight instead. The caller must *also* hold
+    sts:AssumeRole on the provider role ARN, which `terraform/security-tooling`
+    grants to the connector's role alone -- so an account administrator could
+    grant it to themselves, but nothing else in the account has it by default.
+    And the external id is required on every assume, so knowing a role ARN is
+    not enough.
+
+    This is a reason the dedicated tooling account earns its keep beyond tidiness:
+    "any principal in this account" is a small, purpose-built set, which makes an
+    account-scoped trust nearly as tight as the role-scoped one AWS will not
+    accept.
+
+    There is no update-custom-log-source, and deleting a source leaves its Glue
+    crawler behind, so this value is effectively permanent once applied.
   EOT
   type        = string
+
+  validation {
+    condition     = can(regex("^[0-9]{12}$", var.provider_principal))
+    error_message = "Must be a 12-digit AWS account id. The API rejects role ARNs."
+  }
 }
 
 variable "provider_external_id" {
