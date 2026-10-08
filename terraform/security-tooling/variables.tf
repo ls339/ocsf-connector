@@ -40,6 +40,19 @@ variable "trusted_principals" {
   type        = list(string)
 }
 
+variable "permissions_boundary" {
+  description = <<-EOT
+    ARN of a permissions boundary to attach to the connector's role.
+
+    Many organisations require a boundary on every role created in their
+    accounts, and refuse anything that creates one without. Without this option
+    the module is simply unusable there, which is the kind of omission that gets
+    an integration rejected at review rather than debated.
+  EOT
+  type        = string
+  default     = null
+}
+
 variable "provider_role_arns" {
   description = <<-EOT
     The AmazonSecurityLake-Provider-* roles this connector may assume, from

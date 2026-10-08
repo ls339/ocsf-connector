@@ -23,6 +23,39 @@ Design and the verified AWS facts behind all of it:
 up, in order, with the irreversible steps marked:
 [`../docs/RUNBOOK.md`](../docs/RUNBOOK.md).
 
+## What you already have, and what this adds
+
+The rule these modules are built to: **create only what exists because the
+connector exists.** Everything else is an input. A connector has no business
+managing an organisation's infrastructure, and a module that insists on creating
+a key, a bucket or a role to someone else's conventions is one that gets refused
+at review.
+
+So this assumes a consumer already has:
+
+| | |
+|---|---|
+| an AWS Organization | with somewhere sensible for security accounts to live |
+| **Security Lake enabled** in the target Region | with its delegated administrator, encryption key and retention already decided |
+| an IaC pipeline | with remote state, which is why both backends here are partial |
+| a Glue crawler role | *optionally* — supply `crawler_role_arn` and we use theirs |
+| a permissions boundary convention | *optionally* — supply `permissions_boundary` and the connector's role carries it |
+| an Okta tenant | with an API Services app scoped to `okta.logs.read` |
+
+And adds only:
+
+| | |
+|---|---|
+| seven custom log sources | these *are* the integration |
+| the role the connector runs as | and its single privilege: assuming the seven provider roles |
+| a Glue crawler role | only when one was not supplied |
+
+It never touches the lake, the bucket, the key, the accounts or the organisation.
+If you are standing up the customer side yourself in order to test — as this
+project's author is — that is [`../docs/RUNBOOK.md`](../docs/RUNBOOK.md) Part A,
+kept deliberately separate so nobody mistakes our demo scaffolding for something
+the product requires you to hand over.
+
 ## What these modules do not do
 
 **They do not enable Security Lake.** `aws_securitylake_data_lake` is absent

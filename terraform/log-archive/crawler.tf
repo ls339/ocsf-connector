@@ -9,7 +9,15 @@
 # behalf. The external-id trust belongs to the provider role Security Lake
 # creates per source, which is not managed here because Security Lake owns it.
 
+locals {
+  # Theirs if supplied, ours otherwise. Everything downstream reads this, so the
+  # choice is invisible past this line.
+  crawler_role_arn = var.crawler_role_arn != null ? var.crawler_role_arn : one(aws_iam_role.crawler[*].arn)
+}
+
 resource "aws_iam_role" "crawler" {
+  count = var.crawler_role_arn == null ? 1 : 0
+
   name        = "${var.source_name_prefix}-securitylake-crawler-${var.region}"
   description = "Lets the Glue crawler read ${var.source_name_prefix}_* custom source objects and keep their tables current."
 
@@ -24,13 +32,17 @@ resource "aws_iam_role" "crawler" {
 }
 
 resource "aws_iam_role_policy_attachment" "crawler_service_role" {
-  role       = aws_iam_role.crawler.name
+  count = var.crawler_role_arn == null ? 1 : 0
+
+  role       = aws_iam_role.crawler[0].name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
 }
 
 resource "aws_iam_role_policy" "crawler_objects" {
+  count = var.crawler_role_arn == null ? 1 : 0
+
   name = "lake-objects"
-  role = aws_iam_role.crawler.id
+  role = aws_iam_role.crawler[0].id
 
   policy = jsonencode({
     Version = "2012-10-17"

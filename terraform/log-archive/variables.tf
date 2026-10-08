@@ -67,6 +67,21 @@ variable "lake_kms_key_arn" {
   default     = null
 }
 
+variable "crawler_role_arn" {
+  description = <<-EOT
+    ARN of an existing IAM role for the Glue crawlers, if the organisation
+    already has one. Omitted, this module creates one.
+
+    An input rather than always ours, because a company that already runs custom
+    sources in Security Lake has a crawler role with their naming, tagging and
+    boundary conventions, and a connector has no business imposing its own. What
+    this module should create is what exists *because the connector exists*; a
+    crawler role is only borderline.
+  EOT
+  type        = string
+  default     = null
+}
+
 variable "provider_principal" {
   description = <<-EOT
     The identity permitted to write these sources: the ARN of the role the

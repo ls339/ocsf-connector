@@ -50,7 +50,7 @@ resource "aws_securitylake_custom_log_source" "okta" {
 
   configuration {
     crawler_configuration {
-      role_arn = aws_iam_role.crawler.arn
+      role_arn = local.crawler_role_arn
     }
 
     provider_identity {
@@ -66,4 +66,5 @@ resource "aws_securitylake_custom_log_source" "okta" {
     aws_iam_role_policy_attachment.crawler_service_role,
     aws_iam_role_policy.crawler_objects,
   ]
+  # Empty when the role was supplied, which is the point: nothing to wait for.
 }

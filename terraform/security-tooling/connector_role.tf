@@ -7,8 +7,9 @@
 # "can write the security data lake".
 
 resource "aws_iam_role" "connector" {
-  name        = var.role_name
-  description = "Assumed by the Okta -> OCSF -> Security Lake connector; may assume the per-source provider roles and nothing else."
+  name                 = var.role_name
+  permissions_boundary = var.permissions_boundary
+  description          = "Assumed by the Okta -> OCSF -> Security Lake connector; may assume the per-source provider roles and nothing else."
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
