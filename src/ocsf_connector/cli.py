@@ -164,7 +164,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Status goes to stderr so stdout stays free for machine-readable output
     # later, and so a shell redirect of results does not swallow the one line
     # that says whether anything happened.
-    destination = f"{config.okta.org_url} -> {config.sink.directory}"
+    destination = f"{config.okta.org_url} -> {config.sink.describe()}"
     # Which state database is in use decides whether a run resumes or starts
     # over, and it was previously unanswerable from the outside. The path is
     # absolute by the time it gets here (config.StateConfig).

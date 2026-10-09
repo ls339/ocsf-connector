@@ -206,6 +206,47 @@ def test_a_completed_run_prints_its_summary(
     assert "range complete" in err
 
 
+def test_the_startup_line_names_the_bucket_when_delivering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """It printed the local directory whatever the kind, so a run delivering to
+    S3 announced it was writing to a folder.
+
+    Found on the first real delivery: 402 events reached a Security Lake bucket
+    under a banner that said `-> out`. The startup line is what somebody reads
+    during an incident to work out where data went, so a line that is wrong in
+    exactly that moment is worse than no line.
+    """
+    body = MINIMAL + S3_SINK
+    config_path = config_with_keys(tmp_path, body)
+
+    async def fake_backfill(config: object, *, since: str, until: str, **rest: Any) -> RunStats:
+        return RunStats(pages=1, written=1, exhausted=True)
+
+    monkeypatch.setattr(cli_module, "backfill", fake_backfill)
+    main(["--config", str(config_path), "backfill", "--since", "a", "--until", "b"])
+
+    err = capsys.readouterr().err
+    assert "s3://synthetic-lake" in err
+    assert "-> out" not in err, "the local directory is not where this run delivered"
+
+
+def test_the_startup_line_names_the_directory_when_not_delivering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The contrast case: a local run must still say where its files land."""
+
+    async def fake_backfill(config: object, *, since: str, until: str, **rest: Any) -> RunStats:
+        return RunStats(pages=1, exhausted=True)
+
+    monkeypatch.setattr(cli_module, "backfill", fake_backfill)
+    main(["--config", str(config_with_keys(tmp_path)), "backfill", "--since", "a", "--until", "b"])
+
+    err = capsys.readouterr().err
+    assert "-> out" in err
+    assert "s3://" not in err
+
+
 def test_a_stopped_run_reports_what_it_did_and_which_signal_stopped_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

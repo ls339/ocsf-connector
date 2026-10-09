@@ -128,6 +128,19 @@ class SinkConfig(Strict):
     account_id: str
     """``external_{okta_org_id}``: Okta events belong to no AWS account (§4.1)."""
 
+    def describe(self) -> str:
+        """Where objects actually go, for the line an operator reads first.
+
+        It used to print ``directory`` whatever the kind, so a run delivering to
+        S3 announced that it was writing to a folder. That is the same mistake
+        this class refuses in the other direction -- a bucket beside
+        ``kind = "local"`` -- and it is worse here, because the startup line is
+        what somebody reads during an incident to work out where the data went.
+        """
+        if self.kind == "s3":
+            return f"s3://{self.bucket}"
+        return str(self.directory)
+
     @field_validator("source_name")
     @classmethod
     def _registrable(cls, value: str) -> str:
