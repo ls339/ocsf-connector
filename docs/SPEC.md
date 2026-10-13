@@ -541,6 +541,29 @@ Management. `unmapped_event_type_total` has a zero floor again, which is the
 whole reason to write a deliberate decision down rather than let the fallback
 absorb it.
 
+**[verified] 2026-10-12. Re-delivering the same window overwrites, and a mapping
+change can strand an object.** The extended table was proven against the lake by
+re-running the identical backfill: 403 events, 15 object keys written, **15
+overwritten and none added**. The object key derives from the batch's opening
+cursor, so an identical window reproduces identical keys — the property the
+commit order depends on after a crash, now demonstrated against real S3 rather
+than a double. Every record carries `okta-2026.10.12` in `metadata.labels`, so a
+row in the lake names the table revision that produced it. Dedup reported
+`0 duplicates skipped`, correctly: the seen-set's TTL had expired since the first
+run, and it absorbs *source* duplicates within a window rather than acting as a
+permanent ledger.
+
+**The caveat that run happened not to expose.** Re-running a backfill after a
+mapping change writes only the keys the *new* run produces. If a change empties a
+(class, event day) pair — every Base Event record on a given day becoming Entity
+Management, say — the old object for that pair is never rewritten and keeps stale
+content indefinitely, since the provider role can write but not delete (§4.2).
+Nothing in the connector notices, and nothing in the lake looks wrong. This run
+avoided it only because the org's activity concentrates on days that still had
+events in every affected class. **A mapping change plus a re-run of an overlapping
+window is the combination to watch**, and clearing the stale objects is an
+administrative act in the lake account, not something the connector can do.
+
 **A class count is not an event count.** These mappings put MFA steps in the same
 Glue table as logons, and that is safe only because `class_uid` and `activity_id`
 classify an event *together* — which is how OCSF is designed. Counting rows in

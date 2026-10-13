@@ -418,6 +418,27 @@ permission to write.
 
 ---
 
+## Re-running a backfill after a mapping change
+
+Use the **identical window** as the original run. The object key is derived from
+the batch's opening cursor, so the same `--since`/`--until` reproduces the same
+keys and the new records overwrite the old ones. A different window writes new
+keys beside the old, leaving two classifications of the same events in the lake.
+
+**[verified 2026-10-12]** 403 events, 15 keys, 15 overwritten, none added.
+
+Then watch for stranded objects. A mapping change can empty a (class, event day)
+pair, and the old object for that pair is never rewritten — the provider role
+writes and cannot delete, so it keeps stale content until someone with
+administrative access removes it:
+
+```sh
+# objects not touched by the latest run
+aws s3api list-objects-v2 --bucket <lake> --prefix ext/   --query 'Contents[?LastModified<`<the run timestamp>`].Key'
+```
+
+And re-crawl afterwards, or Athena keeps describing the old schema.
+
 ## Shortcuts that remain
 
 - **The connector runs by hand**, under a human identity assuming the role.
