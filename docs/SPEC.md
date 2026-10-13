@@ -777,6 +777,23 @@ document had been carrying came back answered:
   AWS's design rather than ours. Objects land encrypted with the configured
   customer-managed key (`ServerSideEncryption: aws:kms`).
 
+**[verified] live, 2026-10-12. Athena returns the rows, and the mapping holds.**
+402 events delivered, crawled, and queried end to end. Grouped by `eventday` and
+`activity_id`, one day reads: 8 Logon, 13 Preauth, 21 Service Ticket Request, 9
+Renew, 8 Authentication Ticket, 7 Other. The MFA events sit at activity 6 and not
+at 1, which is the §3.3 decision validated against a reader that knows nothing
+about this codebase — mapped to Logon, that day would have read as 21 logons
+instead of 8. The query scanned 0.70 KB for 402 events, which is partition
+pruning on `eventday` plus Parquet doing what §4 designed the prefix for.
+
+Two requirements on that path are easy to miss, both now in the runbook. The
+Lake Formation `SELECT` grant is mandatory when Security Lake is enabled
+programmatically. And a customer-managed key needs a key-policy statement letting
+`AWSServiceRoleForLakeFormationDataAccess` call `kms:Decrypt` — Security Lake
+itself needs no `Decrypt`, because writers encrypt, but the reader is a different
+principal at the other end of the pipeline and the error surfaces three services
+away from the cause.
+
 **Base Event has nowhere sanctioned to go** — or so this section said until
 2026-10-08, when `okta_base_event` registered successfully **with no event
 classes declared**. `eventClasses` is genuinely optional, so degraded records get

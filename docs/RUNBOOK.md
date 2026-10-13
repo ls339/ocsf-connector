@@ -124,6 +124,29 @@ aws iam attach-role-policy --role-name AmazonSecurityLakeMetaStoreManager \
   --policy-arn arn:aws:iam::aws:policy/service-role/AmazonSecurityLakeMetastoreManager
 ```
 
+**[verified 2026-10-12] A customer-managed key needs a second statement, for the
+reader.** Security Lake does not need `Decrypt` — writers encrypt on the way in —
+but **Lake Formation reads on Athena's behalf through a service-linked role**, and
+that role does. Without it, every query fails with:
+
+> PERMISSION_DENIED: User: …/AWSServiceRoleForLakeFormationDataAccess/… is not
+> authorized to perform: kms:Decrypt on resource: …/key/… because no
+> identity-based policy allows the kms:Decrypt action
+
+You cannot attach a policy to a service-linked role, so the grant must come from
+the key:
+
+```json
+{"Sid":"AllowLakeFormationDataAccessToRead","Effect":"Allow",
+ "Principal":{"AWS":"arn:aws:iam::<log-archive>:role/aws-service-role/lakeformation.amazonaws.com/AWSServiceRoleForLakeFormationDataAccess"},
+ "Action":["kms:Decrypt","kms:DescribeKey"],"Resource":"*"}
+```
+
+Add it when you create the key, not after the first failed query. AWS's own
+documentation says so in a sentence that is easy to read past: *"The key policy
+must allow the IAM role associated with the Lake Formation data lake location to
+use the KMS key to decrypt the data."*
+
 **[verified]** `lambda.amazonaws.com` is the right trust — Security Lake's ETL
 runs on Lambda, the managed policy's first statement is `AllowWriteLambdaLogs`,
 and the resulting lake reported no exceptions.
@@ -337,6 +360,12 @@ that happens to carry that class.
 Security Lake creates a crawler per source and recommends running it manually
 when new columns appear. Until it has, Athena returns nothing — which is not the
 same as delivery having failed.
+
+**[verified 2026-10-12] Do not write check objects into a registered source's
+prefix.** A crawler registers partitions from whatever it finds, and deleting the
+object afterwards does not remove the partition — it outlives the data and shows
+up in `SELECT DISTINCT accountid`. Remove it with
+`aws glue delete-partition`, or write checks to a throwaway bucket instead.
 
 **The programmatic path requires an explicit grant**, quoted from AWS:
 

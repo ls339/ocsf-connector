@@ -93,6 +93,13 @@ Secrets are named, never stored: the config file holds a *path* to the PEM priva
 key. Any setting can be overridden from the environment — the full list of
 variables is one table in `src/ocsf_connector/config.py`.
 
+**Verified end to end, 2026-10-12.** 402 Okta events read over a DPoP-authenticated
+connection, normalised to OCSF 1.3, written as Parquet by a role scoped to a single
+custom source, encrypted with a customer-managed key, catalogued by Glue, and
+returned by an Athena query — which read 0.70 KB to do it. The mapping decisions
+survive the round trip: MFA events arrive as activity 6 Preauth rather than 1
+Logon, so a count of logons is a count of logons.
+
 **What does not work yet.** `kind = "s3"` delivers to a bucket, and the write path
 is verified against a real one — a PUT durable when it returns, a replayed write
 leaving one object, an error reaching the caller (`scripts/s3_probe.py`, SPEC
