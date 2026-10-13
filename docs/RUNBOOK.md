@@ -361,6 +361,45 @@ Security Lake creates a crawler per source and recommends running it manually
 when new columns appear. Until it has, Athena returns nothing — which is not the
 same as delivery having failed.
 
+**[verified 2026-10-12] The crawler Security Lake creates fires once and then
+never again.** Its schedule is pinned to the creation date —
+`cron(22 * 8 10 ? 2026)` for a source registered on 8 October — so it runs around
+registration, *before any data exists*, infers an empty schema, and reports
+`SCHEDULED` forever after while being permanently inert. Every table sits at zero
+columns until something crawls again.
+
+This matters beyond the first run, because partitions are **discovered, not
+computed**: the tables carry `partition_filtering.enabled` but no projection, so
+each new `eventDay` is invisible to Athena until a crawl registers it. A tail
+delivering tomorrow writes objects nobody can query.
+
+**Decision: a daily crawl, 06:00 UTC, on every source.**
+
+```sh
+aws glue update-crawler --name <source> --schedule "cron(0 6 * * ? *)"
+```
+
+Daily rather than hourly because Glue bills per DPU-hour with a ten-minute
+minimum, so the cost is per *run* and not per object — hourly buys nothing at
+this volume. Set it on sources with no data too: they populate on their own when
+events of that class first arrive, rather than needing someone to remember.
+
+The cost is fixed rather than usage-based: seven crawlers run daily whether or
+not anything changed. At volume, event-driven crawling (S3 events via
+EventBridge) crawls only new files and is cheaper, at the price of more moving
+parts. Partition projection would remove the crawler from the partition question
+entirely — our layout is perfectly regular for it — but the table belongs to
+Security Lake, which may overwrite its properties, and the columns would still
+need one crawl.
+
+**The connector must not do this.** Crawling would need Glue permissions on a
+role whose entire purpose is `PutObject` to one prefix. Who re-describes the data
+is the lake owner's decision, not the shipper's.
+
+A crawler cannot be updated while it is running — `update-crawler` fails with
+`Cannot update Crawler while running`, so schedule them before starting a crawl
+or wait for it to finish.
+
 **[verified 2026-10-12] Do not write check objects into a registered source's
 prefix.** A crawler registers partitions from whatever it finds, and deleting the
 object afterwards does not remove the partition — it outlives the data and shows

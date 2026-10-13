@@ -794,6 +794,21 @@ itself needs no `Decrypt`, because writers encrypt, but the reader is a differen
 principal at the other end of the pipeline and the error surfaces three services
 away from the cause.
 
+**[verified] 2026-10-12. Who keeps the catalog current, and why it is not us.**
+Security Lake's per-source crawler has a schedule pinned to its creation date, so
+it runs once — before any data exists — and is inert thereafter while still
+reporting `SCHEDULED`. Partitions are discovered rather than projected, so every
+new `eventDay` is unqueryable until something crawls. The lake therefore needs a
+standing crawl policy; this deployment uses a daily 06:00 UTC schedule on all
+seven sources, and `docs/RUNBOOK.md` records the alternatives.
+
+The connector does not and must not participate. Crawling needs Glue permissions,
+and the whole point of the per-source provider roles is a writer that can `PUT`
+to one prefix and do nothing else (§4.2). Re-describing delivered data belongs to
+whoever owns the catalog. The same reasoning keeps the data lake, its key and its
+retention out of `terraform/`: the connector creates what exists because the
+connector exists, and nothing more.
+
 **Base Event has nowhere sanctioned to go** — or so this section said until
 2026-10-08, when `okta_base_event` registered successfully **with no event
 classes declared**. `eventClasses` is genuinely optional, so degraded records get
