@@ -499,6 +499,48 @@ ringing forever leave it no way to say *"Okta emitted something new"*. Activity
 99 rather than the fallback's 0 also separates a decision from an accident in the
 data itself: 0 means nothing recognised it, 99 means somebody looked.
 
+**[verified] 2026-10-12. The table, extended against five weeks of real traffic.**
+A backfill over a live org returned 402 events, of which 146 — **37%** — reached
+Base Event across 45 distinct event types. Only two of those were deliberate; the
+other 43 were drift. The table had been built from the event types Okta documents
+and from a two-day-old org, and that is a different thing from what an org
+actually emits.
+
+Four rules decided the extension, in order:
+
+1. Okta performing CRUD on a thing — app, policy, zone, key, profile, device — is
+   **Entity Management (3004)**, which has by far the richest verb set: Create,
+   Read, Update, Delete, Enroll, Activate, Deactivate.
+2. A change to a *user's* account state is **Account Change (3001)**.
+3. Privileges granted to or revoked from a *user* are **User Access Management
+   (3005)**.
+4. Everything else is **Base Event / 99 Other**, written into the table rather
+   than left to the fallback.
+
+Four judgement calls worth stating, because a reader will otherwise wonder:
+
+- **Privileges granted to an application are Entity Management, not 3005.**
+  `app.oauth2.admin.consent.grant` and `app.oauth2.client.privilege.grant` grant
+  to a machine. 3005 requires a `user`, so putting them there would mean a
+  placeholder person standing in for an OAuth client, and any report of who holds
+  privileges would count applications as people.
+- **Enabling an MFA factor is not using one.** `user.mfa.factor.activate` is
+  Account Change / 10 MFA Factor Enable; `user.authentication.auth_via_mfa` stays
+  at Authentication / 6 Preauth. Conflating them would make every sign-in look
+  like an enrolment — the mirror of the double-count §3.3 already avoids.
+- **Reading a client secret is Entity Management / 2 Read.** Low volume, high
+  interest, and 3004 is the only IAM class with a Read activity, which is what
+  makes it a queryable fact rather than a JSON string inside `unmapped`.
+- **Devices are entities.** Arguable, since a device is not an identity object —
+  but 3004 is the only class with Enroll, and device enrolment is exactly that.
+
+Result: Base Event falls to **52 events, 12.9%**, across 11 event types that are
+all in the table on purpose. The remaining 43 types became Entity Management
+(149 events, 37% of traffic, from nothing), Account Change and User Access
+Management. `unmapped_event_type_total` has a zero floor again, which is the
+whole reason to write a deliberate decision down rather than let the fallback
+absorb it.
+
 **A class count is not an event count.** These mappings put MFA steps in the same
 Glue table as logons, and that is safe only because `class_uid` and `activity_id`
 classify an event *together* — which is how OCSF is designed. Counting rows in

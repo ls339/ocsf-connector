@@ -271,6 +271,110 @@ def test_no_new_mapping_added_a_second_logon_to_a_single_sign_in() -> None:
     )
 
 
+DELIBERATE_BASE_EVENT = {
+    # Not identity events, and no OCSF 1.3.0 IAM class claims them. Each is in
+    # the table on purpose rather than left to the fallback, so that
+    # unmapped_event_type_total keeps meaning "Okta emitted something new".
+    "security.request.blocked",
+    "policy.evaluate_sign_on",
+    "user.session.access_admin_app",
+    "application.provision.user.push",
+    "application.provision.user.sync",
+    "application.provision.user.push_profile",
+    "app.user_management.push_new_user_success",
+    "app.app_instance.provision_sync_job.started",
+    "app.app_instance.provision_sync_job.completed",
+    "security.protected_action.attempt",
+    "system.email.delivery",
+    "user.session.context.change",
+}
+
+
+def test_the_types_deliberately_left_at_base_event_are_exactly_these(
+    mapper: OktaOcsfMapper,
+) -> None:
+    """Restated literally, because a missing entry is invisible otherwise.
+
+    An event type dropped from this group still reaches Base Event -- through the
+    fallback, at activity 0 instead of 99 -- so nothing about the delivered object
+    looks wrong. What changes is that it starts incrementing
+    unmapped_event_type_total again, putting a floor back under the drift alarm.
+
+    The version digest would catch the edit, but its message invites updating the
+    digest; this one names what left. Found by mutation: removing
+    system.email.delivery passed every other test in this file.
+    """
+    at_base_event = {name for name, (cls, _) in mapper.event_rules().items() if cls == 0}
+
+    assert at_base_event == DELIBERATE_BASE_EVENT
+    for name in at_base_event:
+        assert mapper.event_rules()[name] == (0, 99), (
+            f"{name} is at Base Event but not at activity 99 Other -- 0 Unknown is "
+            "what the fallback uses, so it would read as an accident"
+        )
+
+
+def test_privileges_granted_to_an_application_are_not_user_access(
+    mapper: OktaOcsfMapper,
+) -> None:
+    """The rule that decides a whole family of events (pet.25).
+
+    User Access Management requires a `user`, so putting an OAuth client's
+    consent grant there would mean a placeholder person standing in for a
+    machine -- and any report counting who was granted privileges would count
+    applications as people. Granting privileges *to* an app is a change to that
+    app, which is Entity Management.
+    """
+    rules = mapper.event_rules()
+
+    assert rules["user.account.privilege.grant"] == (3005, 1), "a person: Assign Privileges"
+    assert rules["app.oauth2.admin.consent.grant"][0] == 3004, "an application: Entity Update"
+    assert rules["app.oauth2.client.privilege.grant"][0] == 3004
+
+    granted_to_people = {
+        name for name, (cls, _) in rules.items() if cls == 3005 and "oauth2" in name
+    }
+    assert granted_to_people == set(), f"OAuth clients reached 3005: {granted_to_people}"
+
+
+def test_enabling_a_factor_and_using_one_are_different_events(
+    mapper: OktaOcsfMapper,
+) -> None:
+    """Enrolment is an account change; verification is part of a sign-in.
+
+    Conflating them would make every sign-in look like a factor enrolment, which
+    is the mirror of the double-count pet.15 avoided in the other direction.
+    """
+    rules = mapper.event_rules()
+
+    assert rules["user.mfa.factor.activate"] == (3001, 10), "MFA Factor Enable"
+    assert rules["system.mfa.factor.activate"] == (3001, 10)
+    assert rules["user.authentication.auth_via_mfa"] == (3002, 6), "Preauth, during a sign-in"
+
+
+def test_reading_a_client_secret_is_classified_rather_than_buried(
+    mapper: OktaOcsfMapper,
+) -> None:
+    """Low volume, high interest: somebody read a client secret.
+
+    Entity Management is the only one of the six IAM classes with a Read
+    activity, which is what makes this a queryable fact instead of a JSON string
+    inside an `unmapped` column.
+    """
+    assert mapper.event_rules()["app.oauth2.client.read_client_secret"] == (3004, 2)
+
+
+def test_devices_are_treated_as_entities(mapper: OktaOcsfMapper) -> None:
+    """Arguable, and decided: a device is not an identity object, but Entity
+    Management is the only class with Enroll, and device enrolment is exactly
+    that. The alternative was Base Event, which says less for no more honesty."""
+    rules = mapper.event_rules()
+
+    assert rules["device.enrollment.create"] == (3004, 6), "Enroll"
+    assert rules["device.lifecycle.activate"] == (3004, 10), "Activate"
+    assert rules["device.user.add"] == (3004, 3), "Update"
+
+
 def test_a_decided_event_type_does_not_register_as_source_drift() -> None:
     """Why the five are in the table rather than left to the fallback.
 
@@ -410,7 +514,7 @@ def test_the_table_version_moves_with_the_table() -> None:
     )
     digest = hashlib.sha256(repr(entries).encode()).hexdigest()[:12]
 
-    assert (mapper.mapping_version, digest) == ("okta-2026.09.28", "a45367d78f02"), (
+    assert (mapper.mapping_version, digest) == ("okta-2026.10.12", "586c17699046"), (
         "the table and its version must change together: update both, including "
         f"this assertion, to {mapper.mapping_version!r} / {digest!r}"
     )

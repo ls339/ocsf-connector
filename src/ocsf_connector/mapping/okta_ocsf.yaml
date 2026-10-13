@@ -10,7 +10,7 @@
 # Seeded from the event types Okta names on its System Log query page. Okta emits
 # hundreds more and adds them continuously; that is what the fallback is for.
 
-version: okta-2026.09.28
+version: okta-2026.10.12
 ocsf_version: "1.3.0"
 
 # Base Event (class_uid 0, category_uid 0) with activity Unknown. OCSF 1.3.0's
@@ -46,11 +46,28 @@ events:
   user.lifecycle.deactivate: {class_uid: 3001, activity_id: 5}  # Disable
   user.lifecycle.suspend: {class_uid: 3001, activity_id: 9}     # Lock
 
+  # Credentials and factors, from five weeks of real traffic (pet.25). Enabling
+  # an MFA factor is a change to the account; *using* one during a sign-in is
+  # user.authentication.auth_via_mfa above, at Authentication/6 Preauth. Two
+  # different events, and conflating them would make every sign-in look like a
+  # factor enrolment.
+  user.account.update_password: {class_uid: 3001, activity_id: 3}   # Password Change
+  user.account.reset_password: {class_uid: 3001, activity_id: 4}    # Password Reset
+  user.mfa.factor.activate: {class_uid: 3001, activity_id: 10}      # MFA Factor Enable
+  system.mfa.factor.activate: {class_uid: 3001, activity_id: 10}    # same, system-initiated
+  user.account.subscriptions.update: {class_uid: 3001, activity_id: 99}
+
   # --- app assignment (3005 User Access Management) ------------------------
   # An app assignment is a privilege granted to a user, so privileges carries
   # the app name -- 3005 requires it.
   application.user_membership.add: {class_uid: 3005, activity_id: 1}     # Assign
   application.user_membership.remove: {class_uid: 3005, activity_id: 2}  # Revoke
+  # A privilege granted to a *person*. The equivalents that grant privileges to
+  # an application are Entity Management below -- 3005 requires a user, and a
+  # placeholder standing in for an OAuth client would make a privilege-grant
+  # report count apps as people (pet.25).
+  user.account.privilege.grant: {class_uid: 3005, activity_id: 1}        # Assign
+  application.user_membership.update: {class_uid: 3005, activity_id: 99}
 
   # --- group membership (3006 Group Management) ----------------------------
   group.user_membership.add: {class_uid: 3006, activity_id: 3}     # Add User
@@ -75,6 +92,45 @@ events:
   policy.rule.delete: {class_uid: 3004, activity_id: 4}
   policy.rule.activate: {class_uid: 3004, activity_id: 10}
   policy.rule.deactivate: {class_uid: 3004, activity_id: 11}
+
+  # --- more entities a live org turned out to manage (pet.25) ---------------
+  # Added from five weeks of real traffic rather than from Okta's documentation
+  # of what it *can* emit. Entity Management has the richest verb set of the six
+  # IAM classes, which is why most of what an admin does lands here.
+  oauth2.as.created: {class_uid: 3004, activity_id: 1}
+  app.oauth2.client.lifecycle.create: {class_uid: 3004, activity_id: 1}
+  app.oauth2.client.lifecycle.activate: {class_uid: 3004, activity_id: 10}
+  app.oauth2.client.lifecycle.update: {class_uid: 3004, activity_id: 3}
+  app.oauth2.credentials.lifecycle.create: {class_uid: 3004, activity_id: 1}
+  app.oauth2.credentials.lifecycle.activate: {class_uid: 3004, activity_id: 10}
+  app.oauth2.credentials.lifecycle.deactivate: {class_uid: 3004, activity_id: 11}
+  app.oauth2.credentials.lifecycle.delete: {class_uid: 3004, activity_id: 4}
+  # Key rotation changes the entity's keys rather than creating anything.
+  app.oauth2.key.rollover: {class_uid: 3004, activity_id: 3}
+  app.oauth2.as.key.rollover: {class_uid: 3004, activity_id: 3}
+  # Somebody read a client secret. Low volume, high interest, and Entity
+  # Management is the only one of the six classes with a Read activity -- so
+  # this is queryable rather than buried in Base Event.
+  app.oauth2.client.read_client_secret: {class_uid: 3004, activity_id: 2}   # Read
+  # Privileges granted to an application, not to a person. See the note at 3005.
+  app.oauth2.admin.consent.grant: {class_uid: 3004, activity_id: 3}
+  app.oauth2.client.privilege.grant: {class_uid: 3004, activity_id: 3}
+  policy.mapping.create: {class_uid: 3004, activity_id: 1}
+  directory.mapping.update: {class_uid: 3004, activity_id: 3}
+  directory.linked_object.create: {class_uid: 3004, activity_id: 1}
+  directory.app_user_profile.bootstrap: {class_uid: 3004, activity_id: 1}
+  directory.user_profile.bootstrap: {class_uid: 3004, activity_id: 1}
+  application.policy.sign_on.rule.create: {class_uid: 3004, activity_id: 1}
+  application.policy.sign_on.update: {class_uid: 3004, activity_id: 3}
+  zone.create: {class_uid: 3004, activity_id: 1}
+  system.brand.create: {class_uid: 3004, activity_id: 1}
+  system.rate_limit.configuration.update: {class_uid: 3004, activity_id: 3}
+  security.threat.configuration.update: {class_uid: 3004, activity_id: 3}
+  # Devices as entities. Arguable -- a device is not an identity object -- but
+  # 3004 is the only class with Enroll, and device enrolment is exactly that.
+  device.enrollment.create: {class_uid: 3004, activity_id: 6}    # Enroll
+  device.lifecycle.activate: {class_uid: 3004, activity_id: 10}  # Activate
+  device.user.add: {class_uid: 3004, activity_id: 3}             # Update
 
   # --- OAuth token issuance (3002 Authentication) --------------------------
   # Added after a live org showed these dominating real traffic. OCSF 1.3.0's
@@ -110,3 +166,16 @@ events:
   # Reaching the admin console inside a session that already exists. Not a logon
   # -- the logon was user.session.start -- and not account or entity management.
   user.session.access_admin_app: {class_uid: 0, activity_id: 99}
+  # Synchronisation mechanics: the record of a profile being pushed downstream,
+  # not a decision about access. Mapped rather than omitted so they stop
+  # registering as drift (pet.25).
+  application.provision.user.push: {class_uid: 0, activity_id: 99}
+  application.provision.user.sync: {class_uid: 0, activity_id: 99}
+  application.provision.user.push_profile: {class_uid: 0, activity_id: 99}
+  app.user_management.push_new_user_success: {class_uid: 0, activity_id: 99}
+  app.app_instance.provision_sync_job.started: {class_uid: 0, activity_id: 99}
+  app.app_instance.provision_sync_job.completed: {class_uid: 0, activity_id: 99}
+  # Not identity events at all, and no IAM class claims them.
+  security.protected_action.attempt: {class_uid: 0, activity_id: 99}
+  system.email.delivery: {class_uid: 0, activity_id: 99}
+  user.session.context.change: {class_uid: 0, activity_id: 99}
