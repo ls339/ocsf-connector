@@ -134,6 +134,11 @@ terraform/
   security-tooling/ the role the connector runs as, and its one privilege
 ```
 
+## License
+
+Apache License 2.0 — see [`LICENSE`](LICENSE). Permissive, with an explicit
+patent grant, which is the form corporate review usually expects.
+
 ## Data handling
 
 All fixtures are synthetic. No real tenant id, user, email address, or IP address
