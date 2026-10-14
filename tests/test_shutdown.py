@@ -282,6 +282,32 @@ async def test_every_page_reports_progress_including_the_empty_ones() -> None:
     assert [stats.written for stats in seen] == [1, 1, 2], "the empty page reported too"
 
 
+async def test_the_last_page_of_a_bounded_range_reports_too() -> None:
+    """ "After every page" has to include the page that ends the range.
+
+    It did not: on_progress sat below the exhausted break, so a backfill
+    finishing in a single page reported nothing, and a health file configured for
+    it was never written. The suite did not notice because every progress test
+    used a polling chain that never exhausts. Running the connector in a
+    container did.
+    """
+    source = ScriptedSource(chain([["a1"]]))  # terminal: one page, then done
+    seen: list[RunStats] = []
+
+    stats = await run(
+        source=source,
+        mapper=CountingMapper(),
+        sink=RecordingSink(),
+        store=InMemoryStateStore(),
+        stream=STREAM,
+        start=lambda: source.start_backfill("2026-09-05T00:00:00Z", "2026-09-06T00:00:00Z"),
+        on_progress=seen.append,
+    )
+
+    assert stats.exhausted
+    assert [s.pages for s in seen] == [1], "the only page a one-page backfill has"
+
+
 async def test_progress_is_reported_before_the_sleep_not_after() -> None:
     """An operator reads the line for the page that just landed. Reporting after
     the idle sleep would date every line by one poll interval."""

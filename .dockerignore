@@ -1,0 +1,12 @@
+# Allowlist, not a blocklist. The build context otherwise carries 1.5 GB of
+# downloaded terraform providers, a 282 MB virtualenv, and -- the reason this
+# file is written this way round -- config.toml and *.pem, which are the live
+# org's credentials. A blocklist protects you until somebody adds a file nobody
+# thought to exclude; this one admits nothing that is not named.
+*
+
+!src/
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE

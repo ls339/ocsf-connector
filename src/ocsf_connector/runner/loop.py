@@ -211,16 +211,21 @@ async def run(
                 last_purge_at = batch_opened_at
                 await store.purge_expired()
 
+        # After the commit and before both the exhausted break and the sleep, so
+        # the report covers the page that just landed -- every page, including
+        # the last one of a bounded range. It used to sit below the break, which
+        # made "after every page" false for exactly that page: a backfill
+        # finishing in a single page reported nothing at all, and a health file
+        # configured for it was never written. Found by running the connector in
+        # a container, not by the suite.
+        if on_progress is not None:
+            on_progress(snapshot())
+
         if exhausted:
             break
 
         assert next_cursor is not None
         cursor = next_cursor
-
-        # After the commit and before the sleep, so the line an operator reads
-        # covers the page that just landed rather than the one before it.
-        if on_progress is not None:
-            on_progress(snapshot())
 
         if not page.records and on_idle is not None:
             await on_idle()
