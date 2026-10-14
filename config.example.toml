@@ -87,6 +87,17 @@ region = "us-east-1"
 # Okta events belong to no AWS account; AWS recommends this form for that case.
 account_id = "external_your-okta-org-id"
 
+[health]
+# Touched after every page, including the empty ones a healthy idle tail spends
+# most of its time fetching. An ECS health check or Kubernetes exec probe reads
+# this file's age; how stale is too stale is the orchestrator's policy, not ours.
+#
+# Process liveness is not a substitute: a tail wedged inside a network call keeps
+# its PID and keeps looking healthy while delivering nothing.
+#
+# Unset, nothing is written.
+# file = "/run/ocsf-connector/alive"
+
 [state]
 # The cursor and the dedup set.
 #

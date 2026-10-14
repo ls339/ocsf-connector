@@ -45,6 +45,7 @@ ENV_OVERRIDES: dict[str, tuple[str, ...]] = {
     "OCSF_SINK_SOURCE_NAME": ("sink", "source_name"),
     "OCSF_STATE_DATABASE": ("state", "database"),
     "OCSF_TELEMETRY_ENABLED": ("telemetry", "enabled"),
+    "OCSF_HEALTH_FILE": ("health", "file"),
     "OCSF_STREAM": ("stream",),
 }
 """Environment variable -> path into the config document. Every override the
@@ -239,6 +240,24 @@ class StateConfig(Strict):
         return Path(os.path.abspath(value.expanduser()))
 
 
+class HealthConfig(Strict):
+    """Where the connector reports that it is still making progress."""
+
+    file: Path | None = None
+    """Touched after every page, empty ones included. Unset, nothing is written.
+
+    A file rather than an HTTP endpoint, deliberately. What an orchestrator needs
+    to know is not whether the process exists -- a tail wedged inside a fetch keeps
+    its PID and keeps looking healthy -- but whether the loop is still turning, and
+    the mtime of this file is exactly that. It also works the same way for an ECS
+    health check and a Kubernetes exec probe, with no port, no framework and no
+    HTTP parsing in a connector that otherwise has none.
+
+    How stale is too stale is deliberately not configured here. That is a
+    deployment policy, and it belongs to whatever is doing the probing.
+    """
+
+
 class TelemetryConfig(Strict):
     enabled: bool = False
     """Off by default. The connector must never need an observability stack in
@@ -255,6 +274,7 @@ class Config(Strict):
     # and the kind of thing that stops being identical inside a test runner.
     state: StateConfig = Field(default_factory=StateConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
+    health: HealthConfig = Field(default_factory=HealthConfig)
     stream: str | None = None
     """Overrides the per-mode default. Tail and backfill must not share one:
     the store is keyed by stream, so they would fight over a single cursor."""

@@ -1163,6 +1163,28 @@ observability stack, which §7's first rule says the connector must run without.
 Pages climbing with nothing written *is* the healthy idle tail described above.
 Silence now means wedged, which is the only reading it has ever needed to carry.
 
+**Liveness for an orchestrator is a file, not an endpoint.** The `alive:` line
+above is for a human reading logs. A scheduler needs something it can poll, and
+the obvious candidate — process liveness — answers the wrong question: a tail
+wedged inside a fetch keeps its PID and keeps looking healthy, while delivering
+nothing. Nothing else already emitted helps either, since a healthy idle tail
+commits nothing for hours.
+
+So `health.file`, when configured, is touched after every page, empty ones
+included, and its mtime is the signal. An ECS health check or a Kubernetes exec
+probe reads its age; **how stale is too stale is deliberately not configured
+here**, because that is a deployment policy rather than a property of the loop.
+
+A file rather than an HTTP endpoint for two reasons. It costs no port, no
+framework and no hand-rolled HTTP parsing in a connector that has none of those
+things. And it is the same mechanism for both orchestrators, where an endpoint
+would be natural for Kubernetes and awkward for an ECS health check.
+
+A write that fails is swallowed. Raising would kill a connector that is
+delivering correctly in order to report a fault in its own monitoring — and it
+hides nothing, because the file stops advancing, which is exactly what the probe
+is watching.
+
 **No telemetry call may sit between the sink's acknowledgement and the cursor
 commit.** That gap is the delivery guarantee (§5), and a metrics backend having a
 bad day must not be able to strand an acknowledged batch behind an uncommitted

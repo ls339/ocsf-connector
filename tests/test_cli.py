@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
 import signal
 from pathlib import Path
 from typing import Any
@@ -245,6 +246,76 @@ def test_the_startup_line_names_the_directory_when_not_delivering(
     err = capsys.readouterr().err
     assert "-> out" in err
     assert "s3://" not in err
+
+
+# --- the heartbeat a probe watches ------------------------------------------
+
+
+def test_the_heartbeat_advances_with_every_page(tmp_path: Path) -> None:
+    """The mtime is the signal, so it has to move on every page -- including the
+    empty ones a healthy idle tail spends nearly all its time fetching."""
+    beat = tmp_path / "alive"
+    touch = cli_module.heartbeat(beat)
+
+    touch(RunStats(pages=1))
+    first = beat.stat().st_mtime_ns
+    os.utime(beat, ns=(first - 5_000_000_000, first - 5_000_000_000))
+    touch(RunStats(pages=2))
+
+    assert beat.stat().st_mtime_ns > first - 5_000_000_000, "the second page moved it"
+
+
+def test_a_heartbeat_that_cannot_be_written_does_not_stop_delivery(
+    tmp_path: Path,
+) -> None:
+    """Raising here would kill a connector that is delivering correctly in order
+    to report a fault in its own monitoring.
+
+    Swallowing hides nothing: the file stops advancing, which is exactly what the
+    probe watches, so the failure surfaces within one probe interval.
+    """
+    touch = cli_module.heartbeat(tmp_path / "no-such-directory" / "alive")
+
+    touch(RunStats(pages=1))  # must not raise
+
+
+def test_a_configured_heartbeat_reaches_the_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The wire. Both reporters have to receive every page -- an earlier version
+    replaced the printer with the heartbeat rather than fanning out, which is
+    silent and leaves an operator with no `alive:` line at all."""
+    beat = tmp_path / "alive"
+    body = MINIMAL + f'\n[health]\nfile = "{beat}"\n'
+    monkeypatch.setattr(cli_module, "LIVENESS_SECONDS", 0.0)
+
+    async def fake_tail(config: object, *, from_scratch: bool = False, **rest: Any) -> RunStats:
+        rest["on_progress"](RunStats(pages=3, written=2))
+        return RunStats(pages=3, written=2)
+
+    monkeypatch.setattr(cli_module, "tail", fake_tail)
+    main(["--config", str(config_with_keys(tmp_path, body)), "tail"])
+
+    err = capsys.readouterr().err
+    assert beat.exists(), "the probe's file was never written"
+    assert f"health: {beat}" in err, "and the run says which file the probe watches"
+    assert "alive: 3 pages" in err, "the printed line survives alongside it"
+
+
+def test_no_heartbeat_file_means_no_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Unset is the default, and a run that was not asked to write one must not."""
+
+    async def fake_tail(config: object, *, from_scratch: bool = False, **rest: Any) -> RunStats:
+        rest["on_progress"](RunStats(pages=1))
+        return RunStats(pages=1)
+
+    monkeypatch.setattr(cli_module, "tail", fake_tail)
+    main(["--config", str(config_with_keys(tmp_path)), "tail"])
+
+    assert "health:" not in capsys.readouterr().err
+    assert list(tmp_path.glob("alive*")) == []
 
 
 def test_a_stopped_run_reports_what_it_did_and_which_signal_stopped_it(

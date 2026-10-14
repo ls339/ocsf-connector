@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import signal
 import sys
 import time
@@ -97,6 +98,40 @@ def liveness(
     return report
 
 
+def heartbeat(path: Path) -> Callable[[RunStats], None]:
+    """Touch ``path`` every time the loop completes a page.
+
+    The file's mtime answers the only question an orchestrator can usefully ask
+    of a process that never returns: is the loop still turning? Process liveness
+    does not answer it -- a tail wedged inside a fetch keeps its PID and keeps
+    looking healthy -- and neither does the committed cursor, since a healthy
+    idle tail commits nothing for hours (§7).
+
+    A write that fails is swallowed, which is worth defending. The alternative is
+    raising, and raising kills a connector that is delivering correctly in order
+    to report a problem with its own monitoring. The failure is not hidden by
+    swallowing it: the file stops advancing, which is precisely what the probe is
+    watching for, so it surfaces within one probe interval and louder than a
+    traceback would.
+    """
+
+    def touch(stats: RunStats) -> None:
+        with contextlib.suppress(OSError):
+            path.touch()
+
+    return touch
+
+
+def report_to(*reporters: Callable[[RunStats], None]) -> Callable[[RunStats], None]:
+    """Fan the runner's one progress callback out to several consumers."""
+
+    def report(stats: RunStats) -> None:
+        for reporter in reporters:
+            reporter(stats)
+
+    return report
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ocsf-connector",
@@ -170,6 +205,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     # absolute by the time it gets here (config.StateConfig).
     print(f"state: {config.state.database}", file=sys.stderr)
     progress = liveness(every_seconds=LIVENESS_SECONDS)
+    if config.health.file is not None:
+        # Named at startup like the state database, so "which file is the probe
+        # watching" is answerable from the outside rather than inferred.
+        print(f"health: {config.health.file}", file=sys.stderr)
+        progress = report_to(progress, heartbeat(config.health.file))
     try:
         if args.command == "tail":
             print(f"tailing {destination} (Ctrl-C or SIGTERM to stop)", file=sys.stderr)
