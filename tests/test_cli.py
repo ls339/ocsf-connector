@@ -14,6 +14,7 @@ import asyncio
 import io
 import os
 import signal
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -646,6 +647,57 @@ async def test_local_stays_the_default(tmp_path: Path) -> None:
             assert isinstance(parts.sink.store, LocalObjectStore)
         finally:
             parts.close()
+
+
+async def test_backfill_wires_itself_the_way_it_claims(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The composition path we have been running by hand, finally asserted.
+
+    Every other backfill test replaces this function or calls `run` directly with
+    hand-built parts, so until now nothing executed modes.backfill itself --
+    break the stream name, drop stop_signal, forget to close the store, and the
+    suite stayed green while the mode that ships data went wrong.
+    """
+    config = load_config(config_with_keys(tmp_path), env={})
+    captured: dict[str, Any] = {}
+    assembled: list[Any] = []
+
+    real_assemble = modes_module.assemble
+
+    def spy_assemble(cfg: Any, client: Any) -> Any:
+        parts = real_assemble(cfg, client)
+        assembled.append(parts)
+        return parts
+
+    async def capture(**kwargs: Any) -> RunStats:
+        captured.update(kwargs)
+        return RunStats(pages=1, exhausted=True)
+
+    monkeypatch.setattr(modes_module, "assemble", spy_assemble)
+    monkeypatch.setattr(modes_module, "run", capture)
+
+    stats = await modes_module.backfill(
+        config, since="2026-09-01T00:00:00Z", until="2026-09-02T00:00:00Z"
+    )
+
+    assert stats.exhausted
+    assert captured["stream"] == BACKFILL_STREAM, (
+        "sharing tail's stream would let a backfill overwrite tail's cursor (§6)"
+    )
+    assert captured["on_idle"] is None if "on_idle" in captured else True, (
+        "a bounded range must not sleep on an empty page"
+    )
+    assert captured["stop_signal"] is not None, "SIGTERM must reach a backfill too"
+
+    opened = await captured["start"]()
+    assert "2026-09-01T00%3A00%3A00Z" in opened or "2026-09-01T00:00:00Z" in opened
+    assert "until" in opened, "the bounds given on the command line, not from config"
+
+    # The finally: parts.close() that an unhandled SIGTERM used to skip.
+    (parts,) = assembled
+    with pytest.raises(sqlite3.ProgrammingError):
+        parts.store._conn.execute("select 1")
 
 
 async def test_naming_a_dpop_key_selects_dpop(tmp_path: Path) -> None:

@@ -182,6 +182,35 @@ async def test_each_mint_signs_a_fresh_single_use_assertion(
     assert len(identifiers) == 2, "an assertion was replayed"
 
 
+@pytest.mark.parametrize("algorithm", ["HS256", "none", "RS1"])
+def test_credentials_refuse_an_algorithm_okta_does_not_accept(
+    client: httpx.AsyncClient, clock: FakeClock, algorithm: str
+) -> None:
+    """A guard that had never executed in a test. HS256 is the dangerous one: it
+    is symmetric, so an assertion 'signed' with it carries no proof of anything
+    the way the private key does (§2.4)."""
+    with pytest.raises(ValueError, match="does not accept"):
+        credentials(client, clock, algorithm=algorithm)
+
+
+def test_credentials_refuse_a_non_https_org_url(
+    client: httpx.AsyncClient, clock: FakeClock
+) -> None:
+    """Also never executed. The assertion and the token travel over this URL, so
+    a plaintext one would put the signed credential on the wire in the clear."""
+    with pytest.raises(ValueError, match="https://"):
+        # Built directly: the helper above fixes org_url, and this is the one
+        # test that needs to vary it.
+        OktaClientCredentials(
+            org_url="http://synthetic.okta.example",
+            client_id=CLIENT_ID,
+            private_key=CLIENT_KEY,
+            kid=KID,
+            client=client,
+            clock=clock,
+        )
+
+
 def test_the_renewal_margin_leaves_room_rather_than_renewing_at_expiry() -> None:
     """The margin is pinned literally, and so are the clock advances above.
 
