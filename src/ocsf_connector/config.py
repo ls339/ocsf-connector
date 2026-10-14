@@ -34,7 +34,9 @@ ENV_OVERRIDES: dict[str, tuple[str, ...]] = {
     "OCSF_OKTA_CLIENT_ID": ("okta", "client_id"),
     "OCSF_OKTA_KID": ("okta", "kid"),
     "OCSF_OKTA_PRIVATE_KEY_FILE": ("okta", "private_key_file"),
+    "OCSF_OKTA_PRIVATE_KEY": ("okta", "private_key"),
     "OCSF_OKTA_DPOP_KEY_FILE": ("okta", "dpop_key_file"),
+    "OCSF_OKTA_DPOP_KEY": ("okta", "dpop_key"),
     "OCSF_OKTA_SINCE": ("okta", "since"),
     "OCSF_SINK_KIND": ("sink", "kind"),
     "OCSF_SINK_DIRECTORY": ("sink", "directory"),
@@ -79,11 +81,26 @@ class OktaConfig(Strict):
     kid: str
     """Which registered key signed the assertion. Two may be valid during a
     rollover (§2.4)."""
-    private_key_file: Path
+    private_key_file: Path | None = None
     """Path to the PEM, read once at startup. Never the key itself."""
+    private_key: str | None = None
+    """The PEM itself, for a platform that injects secrets as environment
+    variables rather than files.
+
+    Set from ``OCSF_OKTA_PRIVATE_KEY`` and never written in the file -- an ECS
+    task definition's ``secrets`` block, or a Kubernetes secret, puts the value
+    in the environment, and the connector reads it there. That keeps the
+    connector's own AWS permissions at exactly ``sts:AssumeRole`` on the seven
+    provider roles: it never calls Secrets Manager, so it needs no permission to,
+    and the platform stays responsible for supplying credentials (§2.4).
+
+    Exactly one of this and ``private_key_file`` must be set."""
     dpop_key_file: Path | None = None
     """Present means the app requires DPoP, and this is its *separate* key
     pair -- Okta requires a different one from client authentication (§2.4)."""
+    dpop_key: str | None = None
+    """The DPoP PEM itself, from ``OCSF_OKTA_DPOP_KEY``. Same reasoning as
+    ``private_key``; at most one of the two may be set."""
     since: str | None = None
     """Tail's opening bound, and tail's alone -- backfill takes its bounds as
     arguments.
@@ -99,6 +116,42 @@ class OktaConfig(Strict):
     poll_seconds: float = Field(default=10.0, gt=0)
     """How long tail sleeps on an empty page. Okta's per-token budget is the
     real ceiling (§2.3); this only decides how eagerly an idle stream asks."""
+
+    @model_validator(mode="after")
+    def _exactly_one_key_source(self) -> OktaConfig:
+        """One source per key, and never two.
+
+        Refusing *both* is the half that matters. Two sources mean one of them is
+        ignored, and the one you believe in is a fifty-fifty guess -- which is
+        how a rotated secret in the environment silently loses to a stale file
+        left in an image.
+        """
+        if (self.private_key_file is None) == (self.private_key is None):
+            raise ValueError(
+                "set exactly one of okta.private_key_file or OCSF_OKTA_PRIVATE_KEY: "
+                "a path for a file the platform mounts, or the PEM itself for a "
+                "platform that injects secrets as environment variables (SPEC §2.4)"
+            )
+        if self.dpop_key_file is not None and self.dpop_key is not None:
+            raise ValueError(
+                "set at most one of okta.dpop_key_file or OCSF_OKTA_DPOP_KEY, not both"
+            )
+        return self
+
+    def client_key(self) -> str:
+        """The PEM for client authentication, from wherever it was supplied."""
+        if self.private_key is not None:
+            return self.private_key
+        assert self.private_key_file is not None  # guaranteed by the validator
+        return self.private_key_file.read_text()
+
+    def proof_key(self) -> str | None:
+        """The DPoP PEM, or ``None`` when the app does not require DPoP."""
+        if self.dpop_key is not None:
+            return self.dpop_key
+        if self.dpop_key_file is not None:
+            return self.dpop_key_file.read_text()
+        return None
 
 
 class SinkConfig(Strict):

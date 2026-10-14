@@ -331,6 +331,18 @@ v1 detects neither yet. Both are checkable outside the response — the configur
 `since` against the clock at startup, and the age of the last commit — and both
 belong in §7 before v1 ships.
 
+**The key may be a path or the PEM itself, and the difference is a permission.**
+A file suits a platform that mounts secrets; the PEM in `OCSF_OKTA_PRIVATE_KEY`
+suits one that injects them as environment variables, which is what an ECS task
+definition's `secrets` block and a Kubernetes secret both do. The second form is
+why the connector never calls Secrets Manager — so it needs no permission to, and
+its AWS access stays at exactly `sts:AssumeRole` on the seven provider roles
+(§4.2). The platform supplies credentials; the connector consumes them.
+
+Exactly one source per key, and supplying both is refused. Two sources mean one
+is ignored, and which one is a coin toss — which is how a rotated secret in the
+environment loses silently to a stale file left in an image.
+
 ---
 
 ## 3. The normalization: OCSF

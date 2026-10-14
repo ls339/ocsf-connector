@@ -168,6 +168,72 @@ def test_a_source_name_that_fits_is_accepted(tmp_path: Path) -> None:
     assert load_config(fits, env={}).sink.source_name == "okta2"
 
 
+# --- where the keys come from ------------------------------------------------
+
+
+def test_the_key_can_arrive_as_text_from_the_environment(tmp_path: Path) -> None:
+    """A platform that injects secrets as environment variables -- an ECS task
+    definition's `secrets` block, a Kubernetes secret -- rather than as files.
+
+    The point is what the connector then does NOT need: no Secrets Manager call,
+    so no secretsmanager:GetSecretValue on its role, which stays at exactly
+    sts:AssumeRole on the provider roles.
+    """
+    without_file = MINIMAL.replace('private_key_file = "/run/secrets/key.pem"\n', "")
+
+    config = load_config(
+        write(tmp_path, without_file), env={"OCSF_OKTA_PRIVATE_KEY": "-----BEGIN SYNTHETIC-----"}
+    )
+
+    assert config.okta.client_key() == "-----BEGIN SYNTHETIC-----"
+    assert config.okta.private_key_file is None
+
+
+def test_a_key_file_is_read_from_disk(tmp_path: Path) -> None:
+    """The contrast case: a mounted file still works, and is read once."""
+    key = tmp_path / "client.pem"
+    key.write_text("-----BEGIN FROM-A-FILE-----")
+    body = MINIMAL.replace("/run/secrets/key.pem", str(key))
+
+    assert load_config(write(tmp_path, body), env={}).okta.client_key() == (
+        "-----BEGIN FROM-A-FILE-----"
+    )
+
+
+def test_two_sources_for_one_key_are_refused(tmp_path: Path) -> None:
+    """The half that matters. Two sources mean one is ignored, and which one is a
+    fifty-fifty guess -- which is how a rotated secret in the environment loses
+    silently to a stale file left in an image."""
+    with pytest.raises(ValidationError, match="exactly one"):
+        load_config(write(tmp_path, MINIMAL), env={"OCSF_OKTA_PRIVATE_KEY": "-----BEGIN X-----"})
+
+
+def test_no_source_for_the_key_is_refused(tmp_path: Path) -> None:
+    without_file = MINIMAL.replace('private_key_file = "/run/secrets/key.pem"\n', "")
+
+    with pytest.raises(ValidationError, match="exactly one"):
+        load_config(write(tmp_path, without_file), env={})
+
+
+def test_the_dpop_key_follows_the_same_rule(tmp_path: Path) -> None:
+    """At most one source, and absent means the app does not require DPoP."""
+    plain = load_config(write(tmp_path, MINIMAL), env={})
+    assert plain.okta.proof_key() is None, "no DPoP key named means Bearer"
+
+    injected = load_config(
+        write(tmp_path, MINIMAL), env={"OCSF_OKTA_DPOP_KEY": "-----BEGIN D-----"}
+    )
+    assert injected.okta.proof_key() == "-----BEGIN D-----"
+
+    key = tmp_path / "dpop.pem"
+    key.write_text("-----BEGIN D-----")
+    # Into [okta], not appended -- MINIMAL ends with [sink], and strict mode
+    # correctly rejects a stray key there rather than silently accepting it.
+    both = MINIMAL.replace("since = ", f'dpop_key_file = "{key}"\nsince = ')
+    with pytest.raises(ValidationError, match="at most one"):
+        load_config(write(tmp_path, both), env={"OCSF_OKTA_DPOP_KEY": "-----BEGIN D-----"})
+
+
 def test_a_minimal_file_loads_with_sensible_defaults(tmp_path: Path) -> None:
     config = load_config(write(tmp_path, MINIMAL), env={})
 

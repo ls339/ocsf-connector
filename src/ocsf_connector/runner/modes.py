@@ -91,18 +91,15 @@ def assemble(config: Config, client: httpx.AsyncClient) -> Assembled:
     credentials = OktaClientCredentials(
         org_url=config.okta.org_url,
         client_id=config.okta.client_id,
-        private_key=config.okta.private_key_file.read_text(),
+        private_key=config.okta.client_key(),
         kid=config.okta.kid,
         client=client,
     )
     # The app either requires proof-of-possession or does not; naming a DPoP key
     # is how an operator says which (§2.4). Getting it wrong fails at the first
     # token request with a message naming the other class.
-    auth = (
-        DpopAuth(credentials, dpop_key=config.okta.dpop_key_file.read_text())
-        if config.okta.dpop_key_file is not None
-        else BearerAuth(credentials)
-    )
+    proof_key = config.okta.proof_key()
+    auth = DpopAuth(credentials, dpop_key=proof_key) if proof_key else BearerAuth(credentials)
 
     store_for_objects = _objects(config)
 

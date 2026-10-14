@@ -73,6 +73,19 @@ directory = "out"
 # okta_user_access = "..."
 # okta_group = "..."
 
+# (in [okta], above) The private key may arrive two ways, and exactly one must
+# be set. A path, for a platform that mounts the PEM as a file:
+#     private_key_file = "/run/secrets/key.pem"
+# Or the PEM itself in the environment, which is what an ECS task definition's
+# `secrets` block and a Kubernetes secret both do:
+#     export OCSF_OKTA_PRIVATE_KEY="$(cat key.pem)"
+# OCSF_OKTA_DPOP_KEY works the same way for the DPoP key pair.
+#
+# Note what the second form avoids: the connector never calls Secrets Manager,
+# so it needs no permission to, and its AWS access stays at exactly
+# sts:AssumeRole on the seven provider roles. The platform supplies; the
+# connector consumes.
+
 # Prefixes the per-class custom source names: okta_authentication,
 # okta_account_change, and so on -- Security Lake registers one source per class.
 #
