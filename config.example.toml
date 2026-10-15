@@ -5,6 +5,12 @@
 # the full list, which is deliberately explicit rather than a naming convention.
 #
 # No secret belongs in this file. The private key is named by path, never pasted.
+#
+# This file is optional. With no --config and no config.toml in the working
+# directory, every setting comes from the environment instead -- which is how the
+# container is configured, because the published image deliberately carries no
+# config file (SPEC 6.1). A path passed to --config must exist, though: naming a
+# file that is not there is an error, not a fallback to the environment.
 
 # Which stream's cursor to resume from. Leave unset: tail and backfill default to
 # different names, and they must not share one -- the state store is keyed by
@@ -72,6 +78,16 @@ directory = "out"
 # okta_entity = "..."
 # okta_user_access = "..."
 # okta_group = "..."
+#
+# This is the one table-valued setting, so its environment form packs the pairs
+# into a single variable -- a task definition has no way to express a table:
+#
+#     OCSF_SINK_PROVIDER_ROLES="okta_base_event=arn:...,okta_authentication=arn:..."
+#
+# Comma between pairs, "=" between name and ARN; neither can contain either
+# character, so nothing needs quoting. Surrounding spaces are stripped. All seven
+# or none -- a list one entry short is refused here rather than failing at the
+# seventh class's first PUT.
 
 # (in [okta], above) The private key may arrive two ways, and exactly one must
 # be set. A path, for a platform that mounts the PEM as a file:

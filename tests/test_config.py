@@ -383,3 +383,114 @@ def test_every_override_points_somewhere_real(tmp_path: Path) -> None:
 def test_a_missing_file_is_an_error_not_an_empty_config(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         load_config(tmp_path / "absent.toml", env={})
+
+
+ROLES_AS_ONE_VARIABLE = ",".join(
+    f"{source}={PROVIDER_ROLE.format(source=source)}" for source in WRITTEN_SOURCES
+)
+"""What a task definition can hold: one env entry, not a TOML table."""
+
+FROM_THE_ENVIRONMENT_ALONE = {
+    "OCSF_OKTA_ORG_URL": "https://synthetic.okta.example",
+    "OCSF_OKTA_CLIENT_ID": "0oasynthetic0000001",
+    "OCSF_OKTA_KID": "synthetic-key-1",
+    "OCSF_OKTA_PRIVATE_KEY": "-----BEGIN PRIVATE KEY-----\nsynthetic\n-----END PRIVATE KEY-----\n",
+    "OCSF_OKTA_SINCE": "2026-09-01T00:00:00Z",
+    "OCSF_SINK_KIND": "s3",
+    "OCSF_SINK_BUCKET": "synthetic-lake",
+    "OCSF_SINK_REGION": "us-east-1",
+    "OCSF_SINK_ACCOUNT_ID": "external_synthetic-org",
+    "OCSF_SINK_EXTERNAL_ID": "synthetic-external-id",
+    "OCSF_SINK_PROVIDER_ROLES": ROLES_AS_ONE_VARIABLE,
+    "OCSF_STATE_DATABASE": "/var/lib/ocsf/state.db",
+    "OCSF_HEALTH_FILE": "/run/ocsf/alive",
+}
+"""Every setting a delivering tail needs, with no file anywhere. This is the
+container's configuration (SPEC 6.1), so the assertion that it loads is the
+assertion that the published image can run at all -- there is no config.toml in
+it, and baking one in would put a tenant's org URL inside a shared image."""
+
+
+def test_a_delivering_run_configures_from_the_environment_with_no_file() -> None:
+    config = load_config(None, env=FROM_THE_ENVIRONMENT_ALONE)
+
+    assert config.okta.org_url == "https://synthetic.okta.example"
+    assert config.okta.since is not None
+    assert (config.sink.kind, config.sink.bucket) == ("s3", "synthetic-lake")
+    assert config.sink.external_id == "synthetic-external-id"
+    assert set(config.sink.provider_roles) == set(WRITTEN_SOURCES)
+    assert config.state.database == Path("/var/lib/ocsf/state.db")
+    assert config.health.file == Path("/run/ocsf/alive")
+    assert config.okta.client_key().startswith("-----BEGIN PRIVATE KEY-----")
+
+
+def test_the_role_table_survives_the_round_trip_through_one_variable() -> None:
+    """Not just the count. A pairing that shifted by one would give every class
+    another class's role, and since all seven roles can write the same bucket
+    the first failure would be an object under the wrong source's prefix."""
+    roles = load_config(None, env=FROM_THE_ENVIRONMENT_ALONE).sink.provider_roles
+
+    assert roles == {source: PROVIDER_ROLE.format(source=source) for source in WRITTEN_SOURCES}
+
+
+def test_whitespace_around_the_pairs_is_tolerated() -> None:
+    """A task definition or a shell heredoc may wrap the list. An ARN with a
+    stray space in it is rejected by STS at the first assume-role, long after
+    the run looked healthy."""
+    spaced = ", ".join(
+        f" {source} = {PROVIDER_ROLE.format(source=source)} " for source in WRITTEN_SOURCES
+    )
+    roles = load_config(
+        None, env={**FROM_THE_ENVIRONMENT_ALONE, "OCSF_SINK_PROVIDER_ROLES": spaced}
+    ).sink.provider_roles
+
+    assert roles == {source: PROVIDER_ROLE.format(source=source) for source in WRITTEN_SOURCES}
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    ["okta_base_event", "okta_base_event=", "=arn:aws:iam::000000000000:role/x"],
+)
+def test_a_pair_that_is_not_source_equals_arn_is_refused(malformed: str) -> None:
+    """Refused rather than skipped. A list quietly one entry short delivers six
+    classes and drops the seventh at its first PUT -- by which time the cursor
+    has moved past the events it could not write."""
+    env = {**FROM_THE_ENVIRONMENT_ALONE, "OCSF_SINK_PROVIDER_ROLES": malformed}
+
+    with pytest.raises(ValidationError, match="not source_name=role_arn"):
+        load_config(None, env=env)
+
+
+def test_a_role_list_short_of_a_source_is_still_refused_from_the_environment() -> None:
+    """The completeness rule is the sink's, and routing the roles through a
+    single string must not slip past it."""
+    short = ",".join(
+        f"{source}={PROVIDER_ROLE.format(source=source)}" for source in WRITTEN_SOURCES[:-1]
+    )
+    env = {**FROM_THE_ENVIRONMENT_ALONE, "OCSF_SINK_PROVIDER_ROLES": short}
+
+    with pytest.raises(ValidationError):
+        load_config(None, env=env)
+
+
+def test_no_file_and_an_empty_environment_names_what_is_missing() -> None:
+    """The failure mode this replaces is a container that starts with defaults
+    nobody chose. Required settings still have to come from somewhere, and the
+    error has to say which."""
+    with pytest.raises(ValidationError) as caught:
+        load_config(None, env={})
+
+    message = str(caught.value)
+    assert "okta" in message and "sink" in message
+
+
+def test_a_file_still_wins_over_nothing_and_the_environment_still_wins_over_it(
+    tmp_path: Path,
+) -> None:
+    """Precedence is unchanged by making the file optional."""
+    config = load_config(
+        write(tmp_path, MINIMAL), env={"OCSF_OKTA_ORG_URL": "https://other.okta.example"}
+    )
+
+    assert config.okta.org_url == "https://other.okta.example"
+    assert config.okta.client_id == "0oasynthetic0000001"

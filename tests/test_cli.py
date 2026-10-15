@@ -33,7 +33,13 @@ from ocsf_connector.sources.okta.auth import BearerAuth, DpopAuth
 from ocsf_connector.state.sqlite import SqliteStateStore
 from ocsf_connector.telemetry.base import NullMetrics
 from ocsf_connector.telemetry.otel import OtelMetrics
-from tests.test_config import ALL_ROLES, MINIMAL, S3_SINK, write
+from tests.test_config import (
+    ALL_ROLES,
+    FROM_THE_ENVIRONMENT_ALONE,
+    MINIMAL,
+    S3_SINK,
+    write,
+)
 
 # Real key material, reusing the pair that suite already generates at import
 # rather than paying for a third. It has to be real: DpopAuth derives the public
@@ -278,6 +284,42 @@ def test_a_heartbeat_that_cannot_be_written_does_not_stop_delivery(
     touch = cli_module.heartbeat(tmp_path / "no-such-directory" / "alive")
 
     touch(RunStats(pages=1))  # must not raise
+
+
+def test_an_unwritable_heartbeat_says_so_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The probe reports the wrong thing on its own: an unwritable path and a
+    wedged loop are both "a file that stopped advancing", and only one of them
+    is the connector's fault. The first Fargate deployment hit exactly this --
+    root-owned mount, uid 10001, task UNHEALTHY while its own log said 31 pages
+    delivered -- so the line names the path and the errno.
+
+    Once, because a tail runs for months and a path that cannot be written now
+    will not start working in ten seconds.
+    """
+    unwritable = tmp_path / "no-such-directory" / "alive"
+    touch = cli_module.heartbeat(unwritable)
+
+    for page in range(1, 6):
+        touch(RunStats(pages=page))
+
+    err = capsys.readouterr().err
+    assert err.count("cannot be written") == 1, err
+    assert str(unwritable) in err
+    assert "delivery continues" in err, "or an operator reads it as an outage"
+
+
+def test_a_heartbeat_that_works_says_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The quiet path has to stay quiet, or five minutes of healthy tailing
+    becomes a log line every page."""
+    touch = cli_module.heartbeat(tmp_path / "alive")
+
+    touch(RunStats(pages=1))
+
+    assert capsys.readouterr().err == ""
 
 
 def test_a_configured_heartbeat_reaches_the_runner(
@@ -744,3 +786,52 @@ async def test_the_key_is_read_at_startup_not_held_as_a_path(tmp_path: Path) -> 
             assert parts.source.auth.credentials.private_key == CLIENT_KEY
         finally:
             parts.close()
+
+
+# --- configuration with no file ---------------------------------------------
+
+
+def test_a_run_with_no_file_anywhere_configures_from_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The container's shape. No --config, no config.toml in the working
+    directory, every setting in the environment -- and the run gets far enough
+    to refuse a cold start, which is past configuration and the first thing it
+    could possibly complain about instead.
+
+    Asserting on the cold-start refusal rather than on a loaded Config object is
+    the point: it proves main() actually used the environment, not that
+    load_config can.
+    """
+    monkeypatch.chdir(tmp_path)
+    assert not (tmp_path / "config.toml").exists()
+    key = tmp_path / "client.pem"
+    key.write_text(CLIENT_KEY)
+    for name, value in FROM_THE_ENVIRONMENT_ALONE.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("OCSF_OKTA_PRIVATE_KEY", CLIENT_KEY)
+    monkeypatch.setenv("OCSF_STATE_DATABASE", str(tmp_path / "state.db"))
+    monkeypatch.setenv("OCSF_HEALTH_FILE", str(tmp_path / "alive"))
+
+    code = main(["tail"])
+
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "refusing to start" in err, err
+    assert "synthetic-lake" in err, "and the startup line names the real destination"
+
+
+def test_a_named_file_that_is_absent_is_still_an_error_however_full_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Naming a file that is not there is a mistake, not an invitation to fall
+    back to the environment. An operator who passes --config has said where the
+    settings live; silently running with a different set is how a connector ends
+    up pointed at the wrong tenant."""
+    for name, value in FROM_THE_ENVIRONMENT_ALONE.items():
+        monkeypatch.setenv(name, value)
+
+    code = main(["--config", str(tmp_path / "absent.toml"), "tail"])
+
+    assert code == 2
+    assert "no configuration at" in capsys.readouterr().err

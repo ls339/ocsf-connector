@@ -1121,6 +1121,48 @@ flag invites `--since $(date)` — the moving opening cursor §5.2 exists to pre
 query is meaningless without them. A parser refuses those mistakes; a runtime
 check only reports them afterwards.
 
+### 6.1 How a run is configured, and why the published image carries no file
+
+Settings come from a TOML file, from the environment, or from both, and the
+environment wins. `ENV_OVERRIDES` in `config.py` is the whole list, written out
+rather than derived from a naming convention, so the set of variables an operator
+can set is greppable and cannot drift from what the loader accepts.
+
+**The file is optional; a *named* file is not.** With no `--config` and no
+`config.toml` in the working directory, a run configures entirely from the
+environment. Pass `--config` and the path must exist — naming a file that is not
+there is a mistake worth reporting, not an invitation to fall back to a different
+set of settings. An operator who says where the configuration lives has said
+something, and silently running with another source is how a connector ends up
+pointed at the wrong tenant.
+
+This is what lets one image serve everyone. A `config.toml` baked into the image
+would carry an org URL, a client id and a key id — tenant identifiers — into
+something pushed to a registry and pulled by anything with read access. So the
+image contains code and nothing else (see the allowlist in `.dockerignore`), and
+the platform supplies org, destination and credentials the same way it already
+supplies secrets: as environment entries. On ECS that is the task definition's
+`secrets` block; on Kubernetes a `secretKeyRef`. Note what this avoids as well:
+the connector never calls Secrets Manager, so it needs no permission to, and its
+AWS access stays at exactly `sts:AssumeRole` on the seven provider roles plus the
+EFS mount.
+
+**One setting is not a scalar.** `sink.provider_roles` is a table of seven custom
+source names to the role ARNs Security Lake created for them (§4.2), and an
+environment variable holds a string. `OCSF_SINK_PROVIDER_ROLES` therefore takes
+`source_name=role_arn` pairs separated by commas. Neither an ARN nor a source
+name can contain `,` or `=`, so the format needs no quoting and no JSON escaping
+inside a task definition. Surrounding whitespace is stripped, because a long list
+gets wrapped and an ARN carrying a stray space is rejected by STS at the first
+assume-role — long after the run looked healthy.
+
+A pair without `=` is an error, not a skipped entry. The completeness rule in
+`SinkConfig` already refuses a table missing any written source, for the reason
+§4.1 gives: a role list one entry short delivers six classes and fails the
+seventh at its first PUT, by which time the cursor has moved past events that
+were never written. Routing the table through a single string must not slip past
+that rule, so parsing is strict and validation still runs afterwards.
+
 ---
 
 ## 7. Self-observability

@@ -42,6 +42,7 @@ ENV_OVERRIDES: dict[str, tuple[str, ...]] = {
     "OCSF_SINK_DIRECTORY": ("sink", "directory"),
     "OCSF_SINK_BUCKET": ("sink", "bucket"),
     "OCSF_SINK_EXTERNAL_ID": ("sink", "external_id"),
+    "OCSF_SINK_PROVIDER_ROLES": ("sink", "provider_roles"),
     "OCSF_SINK_REGION": ("sink", "region"),
     "OCSF_SINK_ACCOUNT_ID": ("sink", "account_id"),
     "OCSF_SINK_SOURCE_NAME": ("sink", "source_name"),
@@ -195,6 +196,34 @@ class SinkConfig(Strict):
             return f"s3://{self.bucket}"
         return str(self.directory)
 
+    @field_validator("provider_roles", mode="before")
+    @classmethod
+    def _parse_roles(cls, value: object) -> object:
+        """Accept ``source=arn,source=arn`` as well as a TOML table.
+
+        The seven roles are the one setting a container cannot express as a
+        scalar, and without this there is no file-less way to configure a
+        delivering run -- which is how the connector is configured on a platform
+        that injects everything through the environment (SPEC 6.1). Neither an
+        ARN nor a source name can contain ``,`` or ``=``, so the format needs no
+        quoting and no JSON escaping inside a task definition.
+
+        A pair without ``=`` is an error rather than a skip: a role list quietly
+        one entry short delivers six classes and drops the seventh at its first
+        PUT.
+        """
+        if not isinstance(value, str):
+            return value
+        roles: dict[str, str] = {}
+        for pair in (p.strip() for p in value.split(",")):
+            if not pair:
+                continue
+            name, separator, arn = pair.partition("=")
+            if not separator or not name.strip() or not arn.strip():
+                raise ValueError(f"provider_roles entry {pair!r} is not source_name=role_arn")
+            roles[name.strip()] = arn.strip()
+        return roles
+
     @field_validator("source_name")
     @classmethod
     def _registrable(cls, value: str) -> str:
@@ -333,10 +362,20 @@ class Config(Strict):
     the store is keyed by stream, so they would fight over a single cursor."""
 
 
-def load_config(path: Path, env: Mapping[str, str] | None = None) -> Config:
-    """Read ``path``, apply environment overrides, validate."""
-    with path.open("rb") as handle:
-        document: dict[str, Any] = tomllib.load(handle)
+def load_config(path: Path | None, env: Mapping[str, str] | None = None) -> Config:
+    """Read ``path``, apply environment overrides, validate.
+
+    ``path`` of ``None`` starts from an empty document and takes every setting
+    from the environment. That is not a convenience: an image that carries no
+    config file carries no tenant's org URL either, so the same published image
+    runs for anyone, and the platform supplies org, keys and destination the one
+    way it already supplies secrets (SPEC 6.1). Required settings that nothing
+    supplies still fail validation here, naming each one.
+    """
+    document: dict[str, Any] = {}
+    if path is not None:
+        with path.open("rb") as handle:
+            document = tomllib.load(handle)
     _apply_env(document, os.environ if env is None else env)
     return Config.model_validate(document)
 

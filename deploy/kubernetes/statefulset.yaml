@@ -1,0 +1,147 @@
+# A StatefulSet, not a Deployment, and replicas: 1 — both deliberate.
+#
+# The cursor and the dedup set are SQLite on a volume. Two replicas keep
+# separate cursors and separate dedup sets, derive different batch keys from the
+# same events, and write DUPLICATE objects into the lake with no error at all:
+# the idempotent-overwrite property holds only for a replay of the *same* batch
+# key (SPEC §4.1). A Deployment's rolling update starts the new pod before the
+# old one terminates, which is that situation for a few seconds on every deploy.
+# A StatefulSet with the default OrderedReady policy terminates first.
+#
+# Scaling this up does not increase throughput. The ceiling is Okta's rate limit
+# on a single ordered cursor (§2.3), which no amount of parallelism raises.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ocsf-connector
+  labels:
+    app.kubernetes.io/name: ocsf-connector
+spec:
+  replicas: 1
+  serviceName: ocsf-connector
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ocsf-connector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ocsf-connector
+    spec:
+      # The connector listens on nothing and needs no cluster API access.
+      automountServiceAccountToken: false
+      serviceAccountName: ocsf-connector  # IRSA: carries sts:AssumeRole on the
+                                          # seven provider roles, nothing else
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001                    # so the mounted volume is writable by
+                                          # the uid the image runs as -- the
+                                          # ECS equivalent of this is the EFS
+                                          # access point's CreationInfo
+        seccompProfile:
+          type: RuntimeDefault
+
+      # A tail ends by being stopped, so this is part of the mode, not cleanup
+      # (§6). One SIGTERM finishes the page in flight, flushes, commits and
+      # exits 143; a second cancels. 30s is generous for one page.
+      terminationGracePeriodSeconds: 30
+
+      containers:
+        - name: ocsf-connector
+          image: <REGISTRY>/ocsf-connector:<TAG>
+          args: ["tail"]                  # no CMD in the image on purpose:
+                                          # backfill takes bounds, tail does not
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+          env:
+            - name: AWS_REGION
+              value: us-east-1
+            - name: OCSF_OKTA_ORG_URL
+              value: https://<YOUR_ORG>.okta.com
+            - name: OCSF_OKTA_CLIENT_ID
+              value: <OKTA_CLIENT_ID>
+            - name: OCSF_OKTA_KID
+              value: <OKTA_KEY_ID>
+            - name: OCSF_OKTA_SINCE
+              value: <ISO8601_OPENING_BOUND>
+            - name: OCSF_SINK_KIND
+              value: s3
+            - name: OCSF_SINK_BUCKET
+              value: <LAKE_BUCKET>
+            - name: OCSF_SINK_REGION
+              value: us-east-1
+            - name: OCSF_SINK_ACCOUNT_ID
+              value: external_<YOUR_OKTA_ORG_ID>
+            # The one table-valued setting, packed into a string:
+            # source_name=role_arn pairs separated by commas (SPEC §6.1).
+            - name: OCSF_SINK_PROVIDER_ROLES
+              value: <okta_base_event=arn:...,okta_authentication=arn:...,...>
+            - name: OCSF_STATE_DATABASE
+              value: /var/lib/ocsf/state.db
+            # On the persistent volume, not an emptyDir. An emptyDir would work
+            # here -- unlike the ECS case, fsGroup makes it writable -- but
+            # keeping the heartbeat beside the state means a volume that has
+            # become unreachable shows up as an unhealthy pod rather than as a
+            # connector that looks fine and commits nothing.
+            - name: OCSF_HEALTH_FILE
+              value: /var/lib/ocsf/alive
+
+          # The platform supplies; the connector consumes. It never calls a
+          # secret store itself, so it needs no permission to.
+          envFrom:
+            - secretRef:
+                name: ocsf-connector      # OCSF_OKTA_PRIVATE_KEY,
+                                          # OCSF_OKTA_DPOP_KEY,
+                                          # OCSF_SINK_EXTERNAL_ID
+
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/ocsf
+
+          # Process liveness is not evidence of progress: a tail wedged inside a
+          # fetch keeps its PID and keeps looking healthy while delivering
+          # nothing (§7). The heartbeat's mtime is the only question worth
+          # asking of a process that never returns.
+          #
+          # 120s against a 10s poll interval tolerates a slow page and an Okta
+          # rate-limit pause without flapping. How stale is too stale is the
+          # orchestrator's policy, not the connector's.
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - import os,sys,time;sys.exit(0 if time.time()-os.path.getmtime('/var/lib/ocsf/alive')<120 else 1)
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 3
+
+          # No readinessProbe. Nothing routes traffic here, so readiness would
+          # only gate the rolling update this StatefulSet is configured to avoid.
+
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi               # no CPU limit: throttling a loop that
+                                          # is rate-limited by Okta anyway only
+                                          # makes pages slower
+
+  # Losing this volume does not corrupt anything -- tail refuses to start rather
+  # than silently re-ingesting from okta.since (§6) -- but that refusal needs a
+  # human, so an ephemeral volume turns every pod replacement into an outage.
+  volumeClaimTemplates:
+    - metadata:
+        name: state
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

@@ -100,17 +100,48 @@ returned by an Athena query — which read 0.70 KB to do it. The mapping decisio
 survive the round trip: MFA events arrive as activity 6 Preauth rather than 1
 Logon, so a count of logons is a count of logons.
 
-**What does not work yet.** `kind = "s3"` delivers to a bucket, and the write path
-is verified against a real one — a PUT durable when it returns, a replayed write
-leaving one object, an error reaching the caller (`scripts/s3_probe.py`, SPEC
-§4.2). What is unproven is everything registration adds. `terraform/` registers
-the seven custom sources across the two accounts AWS's reference architecture puts
-them in, and has never been applied, because Security Lake is not enabled anywhere
-yet — [`docs/RUNBOOK.md`](docs/RUNBOOK.md) is the procedure, with the irreversible
-steps marked. A registered source is written by a role Security Lake
-creates per source; the store assumes those roles and renews them at 80% of their
-lifetime, and that path has never met a real one. The source, auth and tail paths
-have run against a live org.
+## Deploying it
+
+The connector is one long-lived process: `tail` is a service, `backfill` is a job.
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) is the detail;
+`deploy/ecs/task-definition.json` and `deploy/kubernetes/statefulset.yaml` are
+working starting points.
+
+**Run exactly one replica.** This is the one deployment mistake that costs data
+rather than uptime. The cursor and dedup set are SQLite on a volume, so two
+replicas keep separate cursors, derive different batch keys from the same events,
+and write duplicate objects into the lake — silently, because the idempotent
+overwrite only holds for a replay of the *same* key. On ECS that means
+`minimumHealthyPercent=0` as well as `desiredCount=1`, or a routine deployment
+runs two tails for a few seconds. On Kubernetes it means a StatefulSet rather
+than a Deployment.
+
+Scaling up would not help anyway: the throughput ceiling is Okta's rate limit on
+a single ordered cursor, which no amount of parallelism raises.
+
+The published image carries **no configuration file** — baking one in would put
+a tenant's org URL and client id inside a shared image — so a container takes
+every setting from the environment, and the platform injects the keys as
+environment entries. The connector never reads a secret store itself, which is
+why its AWS access is `sts:AssumeRole` on seven roles and nothing else.
+
+**Verified on ECS Fargate, 2026-10-14.** A 0.25 vCPU / 0.5 GB ARM64 task, state
+on an EFS access point with transit encryption and IAM authorization, delivering
+Parquet to a registered Security Lake custom source through per-source provider
+roles. Run in both network shapes: a private subnet behind a NAT gateway, and a
+public subnet with no inbound rules — the task listens on nothing either way, and
+a dedicated NAT costs more per month than the compute it serves. `SIGTERM` from the orchestrator finished the
+page in flight, flushed, committed, printed its summary and exited 143; the
+replacement task resumed from that cursor and read 2 new events rather than
+re-reading 413.
+
+**What is still unproven.** One property, and neither a test nor an idle service
+can reach it: the store assumes each provider role and renews the credentials at
+80% of their lifetime, so an hour-long session renews at 48 minutes. A laptop run
+never gets there and a fixture cannot age. Uptime alone does not do it either —
+the roles are assumed at flush time, so proving renewal needs two flushes more
+than 48 minutes apart, which means a stream with events still arriving an hour
+in. A quiet org idles past the boundary without ever testing it.
 
 ## Design
 
@@ -132,7 +163,14 @@ tests/fixtures/     recorded API pages -- all synthetic
 terraform/
   log-archive/      Security Lake custom sources, one per class, and the crawler role
   security-tooling/ the role the connector runs as, and its one privilege
+deploy/
+  ecs/              Fargate task definition
+  kubernetes/       StatefulSet -- one replica, and the comments explain why
 ```
+
+Note what `terraform/` does *not* contain: no VPC, no cluster, no node group.
+Those belong to the environment the connector runs in, and an integration that
+creates an enterprise's network is an integration nobody installs.
 
 ## License
 

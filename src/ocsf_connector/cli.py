@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import signal
 import sys
 import time
@@ -109,15 +108,35 @@ def heartbeat(path: Path) -> Callable[[RunStats], None]:
 
     A write that fails is swallowed, which is worth defending. The alternative is
     raising, and raising kills a connector that is delivering correctly in order
-    to report a problem with its own monitoring. The failure is not hidden by
-    swallowing it: the file stops advancing, which is precisely what the probe is
-    watching for, so it surfaces within one probe interval and louder than a
-    traceback would.
+    to report a problem with its own monitoring. The probe still fires: the file
+    stops advancing, which is exactly what it watches for.
+
+    But it says so once, because the probe alone reports the wrong thing. An
+    unwritable path and a wedged loop look identical from outside -- both are a
+    file that stopped advancing -- and the first sends an operator to debug a
+    connector that is delivering perfectly. That is not hypothetical: the first
+    Fargate deployment mounted the health file's directory root-owned, so uid
+    10001 could not create it, and the task reported UNHEALTHY while its own log
+    said `31 pages, 413 events written`. One line naming the path and the errno
+    is the difference between a five-minute fix and an afternoon.
+
+    Once, not every page: a path that cannot be written now cannot be written in
+    ten seconds either, and a tail runs for months.
     """
+    reported = False
 
     def touch(stats: RunStats) -> None:
-        with contextlib.suppress(OSError):
+        nonlocal reported
+        try:
             path.touch()
+        except OSError as exc:
+            if not reported:
+                reported = True
+                print(
+                    f"health file {path} cannot be written ({exc}); delivery continues, "
+                    "but any liveness probe reading it will report this run as dead",
+                    file=sys.stderr,
+                )
 
     return touch
 
@@ -140,8 +159,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         type=Path,
-        default=DEFAULT_CONFIG,
-        help=f"path to the TOML configuration (default: {DEFAULT_CONFIG})",
+        default=None,
+        help=(
+            f"path to the TOML configuration (default: {DEFAULT_CONFIG} when it "
+            "exists, otherwise configuration comes entirely from the environment)"
+        ),
     )
     modes = parser.add_subparsers(dest="command", required=True)
 
@@ -187,13 +209,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    # A path given on the command line must exist -- naming a file that is not
+    # there is a mistake worth reporting, not an invitation to fall back to the
+    # environment and start with settings the operator did not intend. An absent
+    # default is different: it means this run has no file, which is how the
+    # container is configured.
+    path: Path | None = args.config
+    if path is None and DEFAULT_CONFIG.exists():
+        path = DEFAULT_CONFIG
+    source = str(path) if path is not None else "the environment"
+
     try:
-        config: Config = load_config(args.config)
+        config: Config = load_config(path)
     except FileNotFoundError:
-        print(f"no configuration at {args.config}", file=sys.stderr)
+        print(f"no configuration at {path}", file=sys.stderr)
         return 2
     except (OSError, ValidationError, ValueError) as exc:
-        print(f"configuration error in {args.config}: {exc}", file=sys.stderr)
+        print(f"configuration error in {source}: {exc}", file=sys.stderr)
         return 2
 
     # Status goes to stderr so stdout stays free for machine-readable output
@@ -222,7 +254,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except MissingConfig as exc:
         # A setting this mode needs, not a runtime failure -- so it exits 2 with
         # the other configuration problems rather than 1.
-        print(f"configuration error in {args.config}: {exc}", file=sys.stderr)
+        print(f"configuration error in {source}: {exc}", file=sys.stderr)
         return 2
     except ColdStartRefused as exc:
         # Deliberately not borrowing the "configuration error" wording: the file

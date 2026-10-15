@@ -213,6 +213,44 @@ nothing subscribes to ingestion failures — see
 
 ---
 
+## A6. Somewhere to run it
+
+The connector is a long-lived process, so something has to host it. This is
+ordinary compute an enterprise already owns, and the connector deliberately does
+not manage it: no VPC, no cluster and no node group is created by anything in
+`terraform/`. What it needs is small and specific.
+
+- **One private subnet with egress**, in the account that will run the task.
+  Outbound HTTPS to the Okta org, to STS and to S3; nothing inbound at all. If
+  the environment already has private subnets behind a NAT gateway — most do —
+  that is the whole requirement.
+- **An S3 gateway endpoint** on that subnet's route table. Parquet delivery is
+  the only traffic with volume in it, and a gateway endpoint carries no hourly
+  and no per-GB charge, so this is free and keeps delivery off the NAT's meter.
+- **A durable volume** for the state database: EFS on ECS, a PVC on Kubernetes.
+  Not optional — see §6 on why a lost cursor stops the connector rather than
+  silently re-ingesting, which is correct but needs a human.
+- **A secret store** the platform can read, for the Okta private key, the DPoP
+  key and the provider roles' external id. The connector never reads these
+  itself; the platform injects them as environment entries, which is why the
+  connector's own AWS access never includes `secretsmanager:*`.
+
+**[verified 2026-10-14]** Built and run end to end on ECS Fargate: 0.25 vCPU,
+0.5 GB, ARM64, state on an EFS access point with transit encryption and IAM
+authorization, keys from Secrets Manager through the task definition's `secrets`
+block. Verified in **both** network shapes — a private subnet behind a NAT
+gateway, and a public subnet with `assignPublicIp` and no inbound rules — because
+the NAT is the single largest line item and is worth a deliberate decision. About
+$11/month either way for compute, storage and secrets; a *dedicated* NAT adds
+$36/month on top, while a NAT the environment already runs adds nothing. The
+standing demo runs the public-subnet variant for that reason.
+
+`deploy/ecs/task-definition.json` and `docs/DEPLOYMENT.md` carry the shape,
+including the two things that bite: exactly one replica, and a health file that
+has to live on a volume whose ownership you chose.
+
+---
+
 # Part B — installing the integration
 
 Everything from here is the connector, and is what a consumer with the above

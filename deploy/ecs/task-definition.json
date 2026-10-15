@@ -1,0 +1,132 @@
+{
+  "family": "ocsf-connector",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "cpu": "256",
+  "memory": "512",
+  "runtimePlatform": {
+    "cpuArchitecture": "ARM64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "executionRoleArn": "arn:aws:iam::<SECURITY_TOOLING_ACCOUNT>:role/ocsf-connector-execution",
+  "taskRoleArn": "arn:aws:iam::<SECURITY_TOOLING_ACCOUNT>:role/ocsf-connector",
+  "volumes": [
+    {
+      "name": "state",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "<EFS_FILE_SYSTEM_ID>",
+        "transitEncryption": "ENABLED",
+        "authorizationConfig": {
+          "accessPointId": "<EFS_ACCESS_POINT_ID>",
+          "iam": "ENABLED"
+        }
+      }
+    }
+  ],
+  "containerDefinitions": [
+    {
+      "name": "ocsf-connector",
+      "image": "<ACCOUNT>.dkr.ecr.us-east-1.amazonaws.com/ocsf-connector:<TAG>",
+      "essential": true,
+      "command": [
+        "tail"
+      ],
+      "readonlyRootFilesystem": true,
+      "user": "10001",
+      "mountPoints": [
+        {
+          "sourceVolume": "state",
+          "containerPath": "/var/lib/ocsf",
+          "readOnly": false
+        }
+      ],
+      "environment": [
+        {
+          "name": "AWS_REGION",
+          "value": "us-east-1"
+        },
+        {
+          "name": "OCSF_OKTA_ORG_URL",
+          "value": "https://<YOUR_ORG>.okta.com"
+        },
+        {
+          "name": "OCSF_OKTA_CLIENT_ID",
+          "value": "<OKTA_CLIENT_ID>"
+        },
+        {
+          "name": "OCSF_OKTA_KID",
+          "value": "<OKTA_KEY_ID>"
+        },
+        {
+          "name": "OCSF_OKTA_SINCE",
+          "value": "<ISO8601_OPENING_BOUND>"
+        },
+        {
+          "name": "OCSF_SINK_KIND",
+          "value": "s3"
+        },
+        {
+          "name": "OCSF_SINK_BUCKET",
+          "value": "<LAKE_BUCKET>"
+        },
+        {
+          "name": "OCSF_SINK_REGION",
+          "value": "us-east-1"
+        },
+        {
+          "name": "OCSF_SINK_ACCOUNT_ID",
+          "value": "external_<YOUR_OKTA_ORG_ID>"
+        },
+        {
+          "name": "OCSF_SINK_PROVIDER_ROLES",
+          "value": "<SEE_BELOW>"
+        },
+        {
+          "name": "OCSF_STATE_DATABASE",
+          "value": "/var/lib/ocsf/state.db"
+        },
+        {
+          "name": "OCSF_HEALTH_FILE",
+          "value": "/var/lib/ocsf/alive"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "OCSF_OKTA_PRIVATE_KEY",
+          "valueFrom": "<SECRET_ARN_OKTA_PRIVATE_KEY>"
+        },
+        {
+          "name": "OCSF_OKTA_DPOP_KEY",
+          "valueFrom": "<SECRET_ARN_OKTA_DPOP_KEY>"
+        },
+        {
+          "name": "OCSF_SINK_EXTERNAL_ID",
+          "valueFrom": "<SECRET_ARN_EXTERNAL_ID>"
+        }
+      ],
+      "healthCheck": {
+        "command": [
+          "CMD",
+          "python",
+          "-c",
+          "import os,sys,time;sys.exit(0 if time.time()-os.path.getmtime('/var/lib/ocsf/alive')<120 else 1)"
+        ],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "stopTimeout": 30,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/ocsf-connector",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ocsf"
+        }
+      }
+    }
+  ]
+}
