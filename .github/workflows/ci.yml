@@ -1,0 +1,127 @@
+# The four gates from CLAUDE.md's "Commands" block, run on the interpreter that
+# ships. Until this existed, every green result came from one laptop, and that
+# laptop was running a different Python than the container -- which is how the
+# suite spent weeks never executing on the version that deploys (issue 2k6).
+#
+# No secrets, and none needed: the tests run against recorded fixtures via
+# respx and make no live API calls, so this is safe on a public repository and
+# on pull requests from forks.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # So a run can be re-triggered without an empty commit.
+  workflow_dispatch:
+
+# Default for a workflow token can be read-write; nothing here writes.
+permissions:
+  contents: read
+
+# A second push to the same branch makes the first run's answer irrelevant.
+# Not applied to main, where each commit's result is worth keeping.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  # Matches the pin in the Dockerfile. A different uv here could resolve
+  # differently than the image builds with, which would make a green CI run
+  # evidence about something other than the artifact.
+  UV_VERSION: "0.13.1"
+
+jobs:
+  # One job per gate rather than one job running four commands. A single job
+  # reports "CI failed"; these report "types failed", which is the difference
+  # between reading a log and reading a name.
+  #
+  # Every job runs the full `uv sync --frozen`, including the two that only need
+  # ruff. Installing pyarrow to run a linter is waste, and it buys the thing
+  # worth more: the lockfile is the single statement of WHICH ruff and WHICH
+  # mypy run, so CI cannot disagree with a laptop about the result. The cache
+  # makes it cheap.
+  #
+  # None of them set a Python version. It comes from .python-version, the same
+  # file the laptop reads -- naming it here would be a second place for the two
+  # to drift apart, which is the bug this workflow exists because of.
+
+  test:
+    name: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          # uv fetches the pinned interpreter; caching it saves the download.
+          cache-python: true
+      # --frozen, not a bare sync: this FAILS if uv.lock disagrees with
+      # pyproject.toml rather than quietly re-resolving. Same flag the
+      # Dockerfile uses, so the two cannot diverge.
+      # setup-uv falls back to "latest" if it cannot read the pin, which would
+      # make this run evidence about a uv nobody ships. A wrong version should
+      # be loud, so assert it once -- if it drifts here it drifts in all four.
+      - name: the uv in use is the one the image ships
+        run: |
+          uv --version
+          actual="$(uv --version | cut -d' ' -f2)"
+          if [ "${actual}" != "${UV_VERSION}" ]; then
+            echo "::error::uv is ${actual}, expected ${UV_VERSION} (the Dockerfile pin)"
+            exit 1
+          fi
+      - run: uv sync --frozen
+      - run: uv run pytest
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-python: true
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+
+  format:
+    name: format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-python: true
+      - run: uv sync --frozen
+      # --check. CI reports formatting; it does not perform it. A workflow that
+      # rewrites the tree makes the committed state and the tested state two
+      # different things.
+      - run: uv run ruff format --check .
+
+  types:
+    name: types
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-python: true
+      - run: uv sync --frozen
+      # `src`, not `.`, matching CLAUDE.md. Strict mode.
+      - run: uv run mypy src
