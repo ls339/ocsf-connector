@@ -5,7 +5,7 @@ description = "Okta System Log to OCSF to Amazon Security Lake"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-requires-python = ">=3.12"
+requires-python = ">=3.13,<3.14"
 dependencies = [
     "httpx>=0.27",
     "pydantic>=2.7",
@@ -43,13 +43,13 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.13"
 strict = true
 
 # pyarrow ships no py.typed marker and has no stubs on PyPI worth pinning. The

@@ -42,7 +42,10 @@ uv run mypy src         # types (strict)
 
 ## Conventions
 
-- Python 3.12, async throughout, `from __future__ import annotations`.
+- Python 3.13, async throughout, `from __future__ import annotations`. Pinned in
+  `.python-version`, bounded in `requires-python`, and the same version the
+  Dockerfile ships -- they drifted apart once and the suite spent weeks never
+  running on the interpreter that deploys.
 - Seams are `Protocol`s in `*/base.py`. Concrete implementations sit beside them.
 - Vendor behavior asserted in code needs a `docs/SPEC.md` section reference in the
   comment, and SPEC.md needs a link to the vendor doc it came from.
