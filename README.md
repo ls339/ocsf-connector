@@ -88,6 +88,14 @@ sends): it finishes the page it is on, prints what the run did, and exits 130 or
 line every five minutes, because a healthy idle tail commits nothing and would
 otherwise be indistinguishable from a wedged one.
 
+Okta keeps 90 days of System Log, and a query reaching further back succeeds
+without error, returning only what is left. Both ways that could lose events
+silently are checked against the clock instead. A backfill, or a first tail run
+(`--from-scratch`), whose `since` is older than 90 days is refused with exit 2,
+naming the earliest date Okta still holds. A tail resuming after more than 90
+days away prints one `warning:` line saying roughly how much is gone, then
+carries on, because refusing cannot bring the events back (`docs/SPEC.md` §2.6).
+
 Secrets are named, never stored: the config file holds a *path* to the PEM private
 key. Any setting can be overridden from the environment — the full list of
 variables is one table in `src/ocsf_connector/config.py`.
@@ -134,13 +142,20 @@ page in flight, flushed, committed, printed its summary and exited 143; the
 replacement task resumed from that cursor and read 2 new events rather than
 re-reading 413.
 
-**What is still unproven.** One property, and neither a test nor an idle service
-can reach it: the store assumes each provider role and renews the credentials at
-80% of their lifetime, so an hour-long session renews at 48 minutes. A laptop run
-never gets there and a fixture cannot age. Uptime alone does not do it either —
-the roles are assumed at flush time, so proving renewal needs two flushes more
-than 48 minutes apart, which means a stream with events still arriving an hour
-in. A quiet org idles past the boundary without ever testing it.
+**Credential renewal, verified on Fargate, 2026-10-18.** The store assumes each
+provider role and renews the credentials at 80% of their lifetime, so an
+hour-long session renews at 48 minutes. Neither a test nor a laptop can reach
+that: a fixture cannot age, and an SSO session expires first. A 77-hour
+unattended run did. Of 97 intervals between commits, 36 were longer than 48
+minutes, so each of those forced a renewal. All 98 commits succeeded, with zero
+errors. The commit order is what makes that evidence: a commit happens only
+after every object it covers is durable, so each one proves the renewed
+credentials wrote real data.
+
+**What is still unproven.** Okta rotates the DPoP nonce every 24 hours and
+honours the previous one for three days. Live runs have shown a cached nonce
+being reused, but no run has been observed handling a rotation. `docs/SPEC.md`
+§2.4 keeps it on the list for that reason.
 
 ## Design
 
