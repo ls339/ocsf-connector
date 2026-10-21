@@ -9,9 +9,8 @@ source, tail and backfill.
 
 ## Why this exists, and what is actually hard about it
 
-Reading a log API and writing JSON is a weekend script. The reason connectors
-take real engineering is what happens at the edges, and this repo is organized
-around three of them.
+Connectors require engineering around the edges. This repo is organized
+around three of these edges.
 
 **1. You cannot resume from a timestamp.**
 
@@ -43,10 +42,10 @@ The replay is *not* caught by the dedup set — the cursor and the seen-set are
 committed atomically, so the crash that loses one loses the other, and the
 replayed batch arrives looking new. It is caught by making the write idempotent:
 a batch is addressed by the cursor it began at, so re-flushing overwrites its
-object instead of adding a second one. The TTL'd `uuid` set covers a different
-failure — duplicates Okta itself delivers. Two mechanisms, two failure modes;
-`docs/SPEC.md` §5.2 is explicit about which covers what, because an earlier draft
-of that section was not.
+object instead of adding a second one. The TTL'd `uuid` set covers duplicates
+Okta itself delivers. Two mechanisms, two failure modes; `docs/SPEC.md` §5.2 is
+explicit about which covers what, because an earlier draft of that section was
+not.
 
 The tests worth reading are in `tests/test_commit_order.py`: they kill the runner
 inside that gap and assert each `uuid` lands exactly once. Inverting the commit
