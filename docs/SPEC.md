@@ -1074,6 +1074,42 @@ a test that cannot fail is not evidence.
 That suite, more than any other artifact in this repo, is the thing worth
 pointing a buyer at.
 
+### 5.5 Reconciliation: the guarantee, measured
+
+The suite shows the guarantee by construction. `scripts/reconcile.py` measures
+it. For a closed window, it reads every `uuid` Okta holds through the
+connector's own source, and every `metadata.uid` in all the custom-source
+tables through Athena. It compares them by id rather than by total, because a
+missing event and a doubled one cancel in a count. The output is counts and
+hash prefixes only.
+
+**[verified] live, 2026-10-21. Clean from 2026-10-07 to 2026-10-20: 235 events,
+each exactly once.** There were three windows: the week before the deployment,
+the day of the deployment and its SIGTERM restart, and the five days after.
+Each showed 0 missing, 0 extra, 0 duplicated within a table, and 0 in two
+tables. Two of the seven tables have no schema, because the org has never
+produced those classes. They are skipped safely, since any such events would
+have shown up as missing.
+
+**It was not clean the first time.** The week before the deployment held 36
+events written twice in the same table. Every one came from two opening
+batches, written on the deployment day 51 minutes apart. Each held the same
+events reaching back two weeks, under different batch keys. The later batch
+contained every row of the earlier one, plus newer events. A resumed stream
+never refetches week-old events, so the stream had been opened from scratch
+twice. The keys differed, so the two openings were not the same query. That is
+the case §6 warns about: a second cold start re-delivers whatever the first
+already did, and only an identical opening query would have overwritten
+instead. The cold-start guard did its job and was overridden by passing
+`--from-scratch` twice. The four earlier objects were removed by an
+administrator, after confirming each was identical to its counterpart, and the
+window then reconciled clean.
+
+Two consequences. First, the commit-order guarantee held throughout. The
+duplicates came from operating the connector, not from a crash. Second, the
+tests could not have found this. Nothing in them bootstraps twice against a
+shared lake, and only measuring the lake did.
+
 ---
 
 ## 6. Modes

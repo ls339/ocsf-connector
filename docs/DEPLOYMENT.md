@@ -144,6 +144,15 @@ aws ecs run-task --cluster <cluster> --launch-type FARGATE \
   --overrides '{"containerOverrides":[{"name":"ocsf-connector","command":["tail","--from-scratch"]}]}'
 ```
 
+**Bootstrap once.** Every `--from-scratch` run re-delivers everything from `since`
+onward, and the cold-start guard cannot tell a second bootstrap from the first.
+If two bootstraps send even slightly different opening queries — a different
+`since`, page size or org URL — the second writes its opening batch *beside*
+the first rather than over it. That leaves duplicates in the lake. It happened
+on the first deployment and was found only by reconciliation (SPEC §5.5). If a
+bootstrap has to be repeated, check that the state store really is empty, and
+use exactly the same settings as the first attempt.
+
 `OCSF_OKTA_SINCE` must be within the last 90 days when this runs. Okta keeps
 nothing older, so an expired bound is refused with exit 2 rather than allowed
 to open silently at the edge (SPEC §2.6). It is never read again after the
