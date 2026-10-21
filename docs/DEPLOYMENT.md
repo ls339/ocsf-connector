@@ -144,6 +144,11 @@ aws ecs run-task --cluster <cluster> --launch-type FARGATE \
   --overrides '{"containerOverrides":[{"name":"ocsf-connector","command":["tail","--from-scratch"]}]}'
 ```
 
+`OCSF_OKTA_SINCE` must be within the last 90 days when this runs. Okta keeps
+nothing older, so an expired bound is refused with exit 2 rather than allowed
+to open silently at the edge (SPEC §2.6). It is never read again after the
+first commit, so it is free to age afterwards.
+
 Let it commit at least one page, stop it, then create the service with the
 unmodified `["tail"]` command. From then on every restart resumes from the
 committed cursor, which is the whole point.

@@ -50,6 +50,25 @@ class StateStore(Protocol):
         ``cursor`` is ``None`` only at the end of a bounded (backfill) range.
         ``mapping_version`` records the mapping-table revision that produced the
         batch being committed, so any write can be traced to its rules.
+
+        A commit also stamps the stream caught up, in the same transaction: see
+        :meth:`mark_caught_up`.
+        """
+        ...
+
+    async def mark_caught_up(self, stream: str) -> None:
+        """Record that the stream was keeping up with the source, as of now.
+
+        The runner calls this on an empty page with nothing buffered -- proof
+        that nothing undelivered existed past the committed cursor -- and a
+        commit does the same implicitly. A healthy idle tail commits nothing for
+        hours (docs/SPEC.md §7), so a commit alone would make an idle stream
+        look abandoned.
+
+        Read back at startup to tell whether a resumed stream was stopped long
+        enough for Okta's retention to have eaten what it missed (§2.6). A
+        stream that has never committed has nothing to stamp, and this is then a
+        no-op.
         """
         ...
 
@@ -105,6 +124,15 @@ class ManagedStateStore(StateStore, Protocol):
     def has_committed(self, stream: str) -> bool:
         """Tell "range finished" from "never started" -- both of which read as a
         ``None`` cursor (docs/SPEC.md §5.3)."""
+        ...
+
+    async def caught_up_age(self, stream: str) -> float | None:
+        """Seconds since the stream was last stamped caught up, on this store's
+        own clock, or ``None`` if it never was.
+
+        An age rather than an instant so the in-memory store's monotonic
+        timeline never has to be compared with anyone's wall clock.
+        """
         ...
 
     def close(self) -> None:

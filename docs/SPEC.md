@@ -327,9 +327,44 @@ Retention loss is silent, and it reaches this connector two ways:
   whose events have aged out. Okta does not say whether a stale `after` still
   resolves; if it does, the runner resumes over a gap without error.
 
-v1 detects neither yet. Both are checkable outside the response — the configured
-`since` against the clock at startup, and the age of the last commit — and both
-belong in §7 before v1 ships.
+Neither is visible in a response, so both are checked against the clock, and
+they are handled differently because refusing helps in one case and hurts in
+the other.
+
+**An expired opening bound is refused.** A backfill, or a tail started with
+`--from-scratch`, checks its `since` before opening anything and exits 2 if Okta
+no longer holds it, naming the edge. An operator is present for both, and
+refusing loses nothing, since no query has opened yet. A bound that is not ISO 8601 is
+refused too, since a bound that cannot be read cannot be checked. A bare bound
+is read as UTC; Okta's own reading of one is not pinned here, and the most a
+wrong guess can do is move the edge by fourteen hours against ninety days. A
+tail that resumes from a cursor never reads `since`, so it is never checked
+there: a tail that has simply run for ninety days must not start refusing its
+own configuration.
+
+**A stale resume is reported, then resumes.** The store keeps `caught_up_at`
+(§5.3), the last moment the stream was known to be keeping up. Every commit
+sets it, and so does an empty page with nothing buffered, which proves nothing
+undelivered existed past the committed cursor. The empty-page write is paced to
+once an hour, because a healthy idle tail commits nothing for hours (§7) and a
+commit alone would make it look abandoned. If a resumed tail finds the stamp
+older than the window, it prints one `warning:` line saying how long it was
+stopped and roughly how many days of events are gone, then resumes anyway.
+Refusing would recover nothing, because the events have already aged out. In a
+container that nobody is watching it would crash-loop, and every day of that
+widens the gap by a day.
+
+Two limits, stated rather than hidden:
+
+- The stamp measures *keeping up*, not *position*. A stream stopped while
+  backlogged was behind by its ingest lag at that moment, and the estimate is
+  short by that much. `ingest_lag_seconds` (§7) shows how far behind it was.
+- A store written before the column existed has no stamp. Its first commit or
+  idle page on the new code sets one. Until then the age is unknown, and an
+  unknown age is not reported as a gap.
+
+Whether Okta still resolves a stale `after` at all remains unknown. If it
+refuses one, the fetch fails loudly, which needs no detection.
 
 **The key may be a path or the PEM itself, and the difference is a permission.**
 A file suits a platform that mounts secrets; the PEM in `OCSF_OKTA_PRIVATE_KEY`
@@ -1002,6 +1037,7 @@ an opaque cursor and must be escaped or hashed before it becomes a path segment.
 | `seen_uuids` | bounded set of recently-seen event `uuid`s, TTL'd by wall clock (default 24h). Covers source-side duplicates, **not** crash replay. |
 | `last_published` | most recent `published` seen. **Observability only.** Never used to resume. |
 | `mapping_version` | mapping table revision that produced the last committed batch. Written with the cursor; read on startup to detect that the table moved under a resumed stream. |
+| `caught_up_at` | wall-clock time the stream was last known to be keeping up: every commit, plus an empty page with nothing buffered, at most hourly. Read on startup to tell whether retention outran a stop (§2.6). **Never used to resume.** Added to an existing database on open, because `CREATE TABLE IF NOT EXISTS` never adds a column. |
 
 **The durable implementation.** `state/sqlite.py` is the one that has to earn
 this: one file, two tables, and `commit()` as a single `BEGIN IMMEDIATE … COMMIT`
@@ -1238,6 +1274,16 @@ A write that fails is swallowed. Raising would kill a connector that is
 delivering correctly in order to report a fault in its own monitoring — and it
 hides nothing, because the file stops advancing, which is exactly what the probe
 is watching.
+
+**Retention loss is a line, for the same reason liveness is.** The two checks
+in §2.6 run once, at startup. A refused opening bound exits 2 with a `refusing
+to start:` line. A resume past the window prints one `warning:` line and keeps
+going. Neither is an instrument, for three reasons. Each happens once per process, so a
+counter would sit at zero or one. It has to reach someone without an
+observability stack behind it. And a log line is already something ECS, via a
+CloudWatch metric filter, or any log pipeline can alarm on. The same
+`caught_up_at` stamp is not a liveness signal either. It is paced to hourly and
+is read only at startup; the health file is the probe.
 
 **No telemetry call may sit between the sink's acknowledgement and the cursor
 commit.** That gap is the delivery guarantee (§5), and a metrics backend having a

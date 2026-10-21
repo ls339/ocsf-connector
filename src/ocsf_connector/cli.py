@@ -23,7 +23,7 @@ from pydantic import ValidationError
 
 from ocsf_connector.config import Config, MissingConfig, load_config
 from ocsf_connector.runner.loop import RunStats
-from ocsf_connector.runner.modes import ColdStartRefused, backfill, tail
+from ocsf_connector.runner.modes import ColdStartRefused, OpeningBoundRefused, backfill, tail
 
 DEFAULT_CONFIG = Path("config.toml")
 
@@ -141,6 +141,16 @@ def heartbeat(path: Path) -> Callable[[RunStats], None]:
     return touch
 
 
+def warn(message: str) -> None:
+    """Something the run will survive but an operator must hear about.
+
+    A line rather than a metric for the reason `liveness` gives: it has to be
+    seen in a terminal or a container log with no observability stack behind
+    it, and a log line is something a platform can already alarm on.
+    """
+    print(f"warning: {message}", file=sys.stderr)
+
+
 def report_to(*reporters: Callable[[RunStats], None]) -> Callable[[RunStats], None]:
     """Fan the runner's one progress callback out to several consumers."""
 
@@ -245,7 +255,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "tail":
             print(f"tailing {destination} (Ctrl-C or SIGTERM to stop)", file=sys.stderr)
-            stats = asyncio.run(tail(config, from_scratch=args.from_scratch, on_progress=progress))
+            stats = asyncio.run(
+                tail(
+                    config,
+                    from_scratch=args.from_scratch,
+                    on_progress=progress,
+                    on_warning=warn,
+                )
+            )
         else:
             print(f"backfilling {args.since} .. {args.until} {destination}", file=sys.stderr)
             stats = asyncio.run(
@@ -256,11 +273,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         # the other configuration problems rather than 1.
         print(f"configuration error in {source}: {exc}", file=sys.stderr)
         return 2
-    except ColdStartRefused as exc:
-        # Deliberately not borrowing the "configuration error" wording: the file
-        # is fine, the state is not, and sending an operator to edit the config
-        # would be sending them to the wrong place. Still exit 2 -- nothing ran,
-        # and something has to be fixed before anything will.
+    except (ColdStartRefused, OpeningBoundRefused) as exc:
+        # Deliberately not borrowing the "configuration error" wording. For a
+        # cold start the file is fine and the state is not; for an expired bound
+        # it may be a command-line argument, not the file, and either way the
+        # message names what to change. Still exit 2 -- nothing ran, and
+        # something has to be fixed before anything will.
         print(f"refusing to start: {exc}", file=sys.stderr)
         return 2
     except (KeyboardInterrupt, asyncio.CancelledError):

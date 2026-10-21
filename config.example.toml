@@ -35,6 +35,11 @@ private_key_file = "/run/secrets/okta_client_key.pem"
 # and takes --since/--until on the command line instead. It has no default on
 # purpose: computing one at startup would break replay after a crash before the
 # first commit (SPEC 5.2). Omit it entirely if you only ever run backfill.
+#
+# It must be within the last 90 days when the stream first opens: Okta keeps
+# nothing older, and a first run past that edge is refused rather than allowed
+# to open silently at the edge (SPEC 2.6). Once a cursor is committed this value
+# is never read again, so it is fine for it to age past the window afterwards.
 since = "2026-09-01T00:00:00Z"
 
 # Page size. Okta's ceiling is 1000, and at roughly one request per second this

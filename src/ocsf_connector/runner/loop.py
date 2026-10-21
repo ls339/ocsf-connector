@@ -58,6 +58,7 @@ async def run(
     metrics: Metrics | None = None,
     clock: Callable[[], float] = time.time,
     purge_every_seconds: float = 3600.0,
+    caught_up_every_seconds: float = 3600.0,
 ) -> RunStats:
     """Drive one stream until it is exhausted or ``max_pages`` is reached.
 
@@ -90,6 +91,12 @@ async def run(
     ``purge_every_seconds`` paces the seen-set reclaim. The runner owns it
     because nothing else can: a tail never restarts, so a purge at startup would
     run exactly once in the mode that accumulates rows forever.
+
+    ``caught_up_every_seconds`` paces how often an idle stream says it is still
+    keeping up (``StateStore.mark_caught_up``). The stamp is what a restart
+    reads to tell whether Okta's retention outran the stop (§2.6); a day of
+    slack would not matter against ninety, and an hour keeps an idle tail to
+    one extra fsync an hour rather than one every poll.
     """
     # Silence by default: the connector must not need an observability stack to
     # run (docs/SPEC.md §7).
@@ -107,6 +114,9 @@ async def run(
     batch_key = cursor
     batch_opened_at = clock()
     last_purge_at = batch_opened_at
+    # None so the first idle page after a start stamps at once: a stream that
+    # resumes and finds nothing new has just proved it is current.
+    last_caught_up_at: float | None = None
     pending: list[str] = []
     pages = mapped = written = duplicates = commits = 0
     exhausted = False
@@ -192,6 +202,9 @@ async def run(
             pending = []
             batch_key = next_cursor if next_cursor is not None else batch_key
             batch_opened_at = clock()
+            # The commit stamped caught_up itself; restart the pacing from it
+            # rather than writing the same fact again on the next idle page.
+            last_caught_up_at = batch_opened_at
 
             # Housekeeping: after the commit, never between it and the flush.
             # Paced off the timestamp just read rather than taking another --
@@ -227,7 +240,17 @@ async def run(
         assert next_cursor is not None
         cursor = next_cursor
 
-        if not page.records and on_idle is not None:
-            await on_idle()
+        if not page.records:
+            # An empty page with nothing buffered is proof that nothing
+            # undelivered exists past the committed cursor. With anything
+            # buffered, undelivered events sit past it by definition, so the
+            # stamp waits for the commit that delivers them.
+            if not pending:
+                now = clock()
+                if last_caught_up_at is None or now - last_caught_up_at >= caught_up_every_seconds:
+                    last_caught_up_at = now
+                    await store.mark_caught_up(stream)
+            if on_idle is not None:
+                await on_idle()
 
     return snapshot()

@@ -28,8 +28,10 @@ which is what keeps the overlap safe where a backfill range meets the tail.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import httpx
 
@@ -41,7 +43,11 @@ from ocsf_connector.sinks.objects import LocalObjectStore, ObjectStore
 from ocsf_connector.sinks.s3 import ProviderRoles, S3ObjectStore
 from ocsf_connector.sinks.security_lake import SecurityLakeSink
 from ocsf_connector.sources.okta.auth import BearerAuth, DpopAuth, OktaClientCredentials
-from ocsf_connector.sources.okta.source import OktaSource
+from ocsf_connector.sources.okta.source import (
+    RETENTION_SECONDS,
+    OktaSource,
+    retention_shortfall,
+)
 from ocsf_connector.state.sqlite import SqliteStateStore
 from ocsf_connector.telemetry.base import Metrics, NullMetrics
 from ocsf_connector.telemetry.otel import OtelMetrics
@@ -64,6 +70,53 @@ class ColdStartRefused(RuntimeError):
     operator says "yes, there is genuinely nothing to resume". Backfill needs no
     such guard: its bounds are already explicit on the command line.
     """
+
+
+class OpeningBoundRefused(RuntimeError):
+    """The query would open at a ``since`` Okta has already discarded, or at one
+    that cannot be read well enough to tell.
+
+    Okta answers such a query without error and returns only what it still
+    holds (docs/SPEC.md §2.6), so nothing downstream could ever notice the
+    missing range. Refusing costs nothing here: this check runs only when a run
+    opens a fresh query -- a backfill, or a tail started with
+    ``--from-scratch`` -- and an operator is present for both.
+    """
+
+
+def _check_opening_bound(since: str, now: float) -> None:
+    try:
+        shortfall = retention_shortfall(since, now)
+    except ValueError as exc:
+        raise OpeningBoundRefused(
+            f"since {since!r} is not an ISO 8601 timestamp, so whether Okta still "
+            f"holds it cannot be checked ({exc})"
+        ) from exc
+    if shortfall > 0:
+        raise OpeningBoundRefused(
+            f"since {since} is {_days(shortfall)} older than Okta keeps System Log "
+            f"events. Nothing published before about {_iso(now - RETENTION_SECONDS)} "
+            "is returned, and a query reaching past that succeeds without saying so "
+            "(SPEC §2.6). Open comfortably after that edge -- it moves forward while "
+            "the run pages -- because anything earlier is already gone"
+        )
+
+
+def _retention_gap_warning(stream: str, age: float) -> str:
+    return (
+        f"stream {stream!r} was last known caught up {_days(age)} ago, longer than "
+        f"Okta keeps System Log events. Whatever was persisted in the first "
+        f"{_days(age - RETENTION_SECONDS)} after that point is gone and cannot be "
+        "recovered; resuming to deliver what remains (SPEC §2.6)"
+    )
+
+
+def _days(seconds: float) -> str:
+    return f"{seconds / 86400:.1f} days"
+
+
+def _iso(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 @dataclass(slots=True)
@@ -162,6 +215,8 @@ async def tail(
     *,
     from_scratch: bool = False,
     on_progress: Callable[[RunStats], None] | None = None,
+    on_warning: Callable[[str], None] | None = None,
+    clock: Callable[[], float] = time.time,
 ) -> RunStats:
     """Follow the stream forever, sleeping when caught up.
 
@@ -176,6 +231,12 @@ async def tail(
     Raises :class:`ColdStartRefused` when the stream has no committed cursor and
     ``from_scratch`` was not set -- the same instinct applied to state rather
     than to configuration.
+
+    Raises :class:`OpeningBoundRefused` when it would open a fresh query at a
+    ``since`` past Okta's retention. Resuming is the opposite case and only
+    warns, through ``on_warning``: a stream stopped longer than the window has
+    already lost what aged out, and refusing would only widen the gap by a day
+    for every day nobody acts (§2.6).
 
     Returns when a signal asks it to, carrying ``stopped_by``. Idling is done by
     the shutdown rather than by ``asyncio.sleep`` so that a stop arriving mid
@@ -195,15 +256,23 @@ async def tail(
             # Checked after assembling, because assembling is what opens (and
             # creates) the database: asking first would report "no cursor" for a
             # file that does not exist yet, which is a different problem.
-            if not from_scratch and await parts.store.get_cursor(stream) is None:
-                raise ColdStartRefused(
-                    f"no committed cursor for stream {stream!r} in "
-                    f"{config.state.database}. Tail resumes from the cursor, and with "
-                    "none it would open from okta.since and re-ingest everything since "
-                    "that bound. Pass --from-scratch if this is genuinely the first run; "
-                    "otherwise the connector is pointed at the wrong state database "
-                    "(SPEC §5.2)"
-                )
+            if await parts.store.get_cursor(stream) is None:
+                if not from_scratch:
+                    raise ColdStartRefused(
+                        f"no committed cursor for stream {stream!r} in "
+                        f"{config.state.database}. Tail resumes from the cursor, and "
+                        "with none it would open from okta.since and re-ingest "
+                        "everything since that bound. Pass --from-scratch if this is "
+                        "genuinely the first run; otherwise the connector is pointed "
+                        "at the wrong state database (SPEC §5.2)"
+                    )
+                # Only here: with a cursor, since is never read, and a tail that
+                # has run for ninety days must not start refusing its own config.
+                _check_opening_bound(since, clock())
+            else:
+                age = await parts.store.caught_up_age(stream)
+                if age is not None and age > RETENTION_SECONDS and on_warning is not None:
+                    on_warning(_retention_gap_warning(stream, age))
             async with stop_on_signals() as shutdown:
                 return await run(
                     source=parts.source,
@@ -229,13 +298,19 @@ async def backfill(
     since: str,
     until: str,
     on_progress: Callable[[RunStats], None] | None = None,
+    clock: Callable[[], float] = time.time,
 ) -> RunStats:
     """Walk a closed range and stop when Okta stops offering a next link (§2.2).
 
     Both bounds are arguments rather than configuration: a backfill is a
     question someone asks once, and its answer should not require editing a file
     that a long-running tail also reads.
+
+    Raises :class:`OpeningBoundRefused` before touching anything when ``since``
+    is past Okta's retention (§2.6). Every backfill opens fresh, so unlike
+    tail there is no resumed case to exempt.
     """
+    _check_opening_bound(since, clock())
     async with httpx.AsyncClient() as client:
         parts = assemble(config, client)
         try:

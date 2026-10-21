@@ -25,6 +25,8 @@ class _Stream:
     which is how a completed bounded range is recorded."""
     mapping_version: str | None = None
     last_published_ms: int | None = None
+    caught_up_at: float | None = None
+    """On the store's ``clock``, which is why only an age is ever read out."""
 
 
 @dataclass(slots=True)
@@ -53,12 +55,25 @@ class InMemoryStateStore:
         mapping_version: str,
     ) -> None:
         row = self._streams.setdefault(stream, _Stream())
-        expiry = self.clock() + self.ttl_seconds
+        now = self.clock()
+        expiry = now + self.ttl_seconds
         for uid in uids:
             self._seen[uid] = expiry
         row.cursor = cursor
         row.committed = True
         row.mapping_version = mapping_version
+        row.caught_up_at = now
+
+    async def mark_caught_up(self, stream: str) -> None:
+        row = self._streams.get(stream)
+        if row is not None and row.committed:
+            row.caught_up_at = self.clock()
+
+    async def caught_up_age(self, stream: str) -> float | None:
+        row = self._streams.get(stream)
+        if row is None or row.caught_up_at is None:
+            return None
+        return self.clock() - row.caught_up_at
 
     async def filter_unseen(self, uids: Sequence[str]) -> list[str]:
         now = self.clock()

@@ -11,10 +11,12 @@ Synthetic throughout (CLAUDE.md invariant 5).
 from __future__ import annotations
 
 import asyncio
+import functools
 import io
 import os
 import signal
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -546,6 +548,12 @@ def test_from_scratch_lets_a_genuine_first_run_proceed(
         return RunStats(pages=1, written=3)
 
     monkeypatch.setattr(modes_module, "run", fake_run)
+    # A fixed clock inside the configured bound's window: on the real one this
+    # test would start failing by itself ninety days after okta.since (§2.6).
+    inside_the_window = datetime(2026, 9, 10, tzinfo=UTC).timestamp()
+    monkeypatch.setattr(
+        cli_module, "tail", functools.partial(modes_module.tail, clock=lambda: inside_the_window)
+    )
 
     code = main(["--config", str(config_with_keys(tmp_path)), "tail", "--from-scratch"])
 
@@ -720,7 +728,12 @@ async def test_backfill_wires_itself_the_way_it_claims(
     monkeypatch.setattr(modes_module, "run", capture)
 
     stats = await modes_module.backfill(
-        config, since="2026-09-01T00:00:00Z", until="2026-09-02T00:00:00Z"
+        config,
+        since="2026-09-01T00:00:00Z",
+        until="2026-09-02T00:00:00Z",
+        # Fixed, or the retention check (§2.6) fails this test on its own once
+        # the bound above is ninety days old.
+        clock=lambda: datetime(2026, 9, 10, tzinfo=UTC).timestamp(),
     )
 
     assert stats.exhausted

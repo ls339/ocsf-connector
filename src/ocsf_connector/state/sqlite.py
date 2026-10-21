@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS streams (
     cursor            TEXT,
     committed         INTEGER NOT NULL DEFAULT 0,
     mapping_version   TEXT,
-    last_published_ms INTEGER
+    last_published_ms INTEGER,
+    caught_up_at      REAL
 );
 CREATE TABLE IF NOT EXISTS seen (
     uid        TEXT PRIMARY KEY,
@@ -85,6 +86,13 @@ class SqliteStateStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=FULL")
         self._conn.executescript(SCHEMA)
+        # CREATE TABLE IF NOT EXISTS leaves an existing table exactly as it was,
+        # so a database written before a column existed never gains it. Added
+        # here rather than by hand on the volume: a running deployment's store
+        # predates caught_up_at, and it must open, not fail on the first commit.
+        columns = {str(row[1]) for row in self._conn.execute("PRAGMA table_info(streams)")}
+        if "caught_up_at" not in columns:
+            self._conn.execute("ALTER TABLE streams ADD COLUMN caught_up_at REAL")
         # Read once at open so has_committed can stay synchronous; a reopened
         # handle recovers it from the file, which is what makes it survive.
         self._committed = {
@@ -111,7 +119,8 @@ class SqliteStateStore:
         write, so a replayed batch cannot arrive with a cursor that has moved
         past it (§5.1).
         """
-        expires_at = self.clock() + self.ttl_seconds
+        now = self.clock()
+        expires_at = now + self.ttl_seconds
         rows = [(uid, expires_at) for uid in uids]
 
         def write() -> None:
@@ -119,14 +128,15 @@ class SqliteStateStore:
             try:
                 self._conn.execute(
                     """
-                    INSERT INTO streams (stream, cursor, committed, mapping_version)
-                    VALUES (?, ?, 1, ?)
+                    INSERT INTO streams (stream, cursor, committed, mapping_version, caught_up_at)
+                    VALUES (?, ?, 1, ?, ?)
                     ON CONFLICT(stream) DO UPDATE SET
                         cursor = excluded.cursor,
                         committed = 1,
-                        mapping_version = excluded.mapping_version
+                        mapping_version = excluded.mapping_version,
+                        caught_up_at = excluded.caught_up_at
                     """,
-                    (stream, cursor, mapping_version),
+                    (stream, cursor, mapping_version, now),
                 )
                 self._conn.executemany(
                     "INSERT OR REPLACE INTO seen (uid, expires_at) VALUES (?, ?)", rows
@@ -188,6 +198,26 @@ class SqliteStateStore:
 
         async with self._lock:
             await asyncio.to_thread(write)
+
+    async def mark_caught_up(self, stream: str) -> None:
+        """An UPDATE, not an upsert: a stream with no committed cursor has no
+        position for this to describe (§2.6)."""
+        now = self.clock()
+
+        def write() -> None:
+            self._conn.execute(
+                "UPDATE streams SET caught_up_at = ? WHERE stream = ? AND committed = 1",
+                (now, stream),
+            )
+
+        async with self._lock:
+            await asyncio.to_thread(write)
+
+    async def caught_up_age(self, stream: str) -> float | None:
+        row = await self._fetch("SELECT caught_up_at FROM streams WHERE stream = ?", (stream,))
+        if row is None or row[0] is None:
+            return None
+        return self.clock() - float(row[0])
 
     async def get_last_published(self, stream: str) -> int | None:
         """Never used to resume. Exists so ingest lag has something to read."""

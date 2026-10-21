@@ -157,6 +157,9 @@ class CrashOnCommit:
     async def record_published(self, stream: str, published_ms: int) -> None:
         await self.inner.record_published(stream, published_ms)
 
+    async def mark_caught_up(self, stream: str) -> None:
+        await self.inner.mark_caught_up(stream)
+
     async def purge_expired(self) -> int:
         # Forwarded like everything else: a wrapper that implements only the
         # methods it wants to intercept stops satisfying the protocol the moment
@@ -200,6 +203,9 @@ class PurgeCounting:
     async def record_published(self, stream: str, published_ms: int) -> None:
         await self.inner.record_published(stream, published_ms)
 
+    async def mark_caught_up(self, stream: str) -> None:
+        await self.inner.mark_caught_up(stream)
+
     async def purge_expired(self) -> int:
         self.purges += 1
         return await self.inner.purge_expired()
@@ -223,3 +229,44 @@ class DriftingStartSource(ScriptedSource):
         alias = f"s{self.starts}"
         self.pages[alias] = self.pages["c0"]
         return alias
+
+
+@dataclass(slots=True)
+class CaughtUpCounting:
+    """Records each time the runner stamps a stream caught up.
+
+    The stamp only matters at the next start, so a run that writes it too often
+    or not at all looks identical while it runs. Counting calls is the only way
+    to see the pacing -- the same reason ``PurgeCounting`` exists.
+    """
+
+    inner: StateStore
+    marks: int = 0
+
+    async def get_cursor(self, stream: str) -> Cursor | None:
+        return await self.inner.get_cursor(stream)
+
+    async def commit(
+        self,
+        stream: str,
+        cursor: Cursor | None,
+        uids: Sequence[str],
+        mapping_version: str,
+    ) -> None:
+        await self.inner.commit(stream, cursor, uids, mapping_version)
+
+    async def mark_caught_up(self, stream: str) -> None:
+        self.marks += 1
+        await self.inner.mark_caught_up(stream)
+
+    async def filter_unseen(self, uids: Sequence[str]) -> list[str]:
+        return await self.inner.filter_unseen(uids)
+
+    async def get_mapping_version(self, stream: str) -> str | None:
+        return await self.inner.get_mapping_version(stream)
+
+    async def record_published(self, stream: str, published_ms: int) -> None:
+        await self.inner.record_published(stream, published_ms)
+
+    async def purge_expired(self) -> int:
+        return await self.inner.purge_expired()

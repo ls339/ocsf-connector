@@ -17,6 +17,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlencode
 
@@ -41,12 +42,36 @@ RATE_LIMIT_WINDOW_SECONDS = 60.0
 when a 429 carries no ``X-Rate-Limit-Reset``; twice this caps any single wait, so
 a nonsense header cannot park the connector."""
 
+RETENTION_SECONDS = 90 * 24 * 60 * 60
+"""Okta returns nothing older than 90 days, and a query reaching past that
+succeeds with only the in-window events and no sign that it was cut short
+(docs/SPEC.md §2.6). Loss here is checkable only against the clock, because the
+response never says."""
+
 BACKOFF_CAP_SECONDS = 30.0
 
 RETRYABLE_STATUS = frozenset({500, 502, 503, 504})
 
 _LINK_VALUE = re.compile(r"<([^>]*)>([^<]*)")
 _REL = re.compile(r';\s*rel\s*=\s*(?:"([^"]*)"|([^\s;,]+))', re.IGNORECASE)
+
+
+def retention_shortfall(since: str, now: float) -> float:
+    """Seconds of the range opening at ``since`` that Okta no longer holds at ``now``.
+
+    Zero when the whole range is still inside the window (docs/SPEC.md §2.6).
+    Raises :class:`ValueError` for a bound that is not ISO 8601, because a bound
+    that cannot be read cannot be checked either, and an unchecked bound is the
+    silent case this exists to remove.
+
+    A bound with no offset is read as UTC. Okta's own reading of one is not
+    pinned anywhere in SPEC; guessing wrong misplaces the edge by at most
+    fourteen hours against a window of ninety days.
+    """
+    opened = datetime.fromisoformat(since)
+    if opened.tzinfo is None:
+        opened = opened.replace(tzinfo=UTC)
+    return max(0.0, (now - RETENTION_SECONDS) - opened.timestamp())
 
 
 class OktaApiError(Exception):

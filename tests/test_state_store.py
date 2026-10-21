@@ -10,6 +10,7 @@ in-memory store cannot have.
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 
 import pytest
 
@@ -242,3 +243,96 @@ async def test_concurrent_commits_do_not_collide(stores: StoreHarness) -> None:
     for index in range(8):
         assert await store.get_cursor(f"stream-{index}") == f"c{index}"
     assert await store.filter_unseen([f"u{index}" for index in range(8)]) == []
+
+
+# --- caught_up: what a restart reads to see retention outrun a stop (§2.6) ----
+
+
+async def test_every_commit_stamps_the_stream_caught_up(stores: StoreHarness) -> None:
+    """Two commits, because the second is the one that matters: the first
+    inserts the row and every later one updates it, and an update that forgot
+    the column would leave a long-running tail stamped at its first commit."""
+    clock = FakeClock()
+    store = stores.open(clock=clock)
+    await store.commit(STREAM, "c1", ["a1"], MAPPING)
+    clock.advance(1_000)
+    await store.commit(STREAM, "c2", ["b1"], MAPPING)
+
+    clock.advance(250)
+
+    assert await store.caught_up_age(STREAM) == 250
+
+
+async def test_an_idle_stamp_moves_the_age_without_a_commit(stores: StoreHarness) -> None:
+    """A healthy idle tail commits nothing for hours (§7). Without this, it
+    would read as a stream that stopped at its last commit."""
+    clock = FakeClock()
+    store = stores.open(clock=clock)
+    await store.commit(STREAM, "c1", ["a1"], MAPPING)
+
+    clock.advance(10_000)
+    await store.mark_caught_up(STREAM)
+    clock.advance(5)
+
+    assert await store.caught_up_age(STREAM) == 5
+    assert await store.get_cursor(STREAM) == "c1", "a stamp is not a commit"
+
+
+async def test_a_stream_that_never_committed_has_no_age(stores: StoreHarness) -> None:
+    """Nothing to describe: with no committed cursor there is no position that
+    retention could have outrun. record_published creates the row first, which
+    is exactly the case an upsert would have stamped by mistake."""
+    store = stores.open()
+    await store.record_published(STREAM, 1_000)
+    await store.mark_caught_up(STREAM)
+
+    assert await store.caught_up_age(STREAM) is None
+
+
+async def test_the_caught_up_stamp_survives_a_restart(stores: StoreHarness) -> None:
+    """The whole use of the stamp is at the next start, so a stamp that lived
+    only in memory would be read exactly never."""
+    if not stores.durable:
+        pytest.skip("in-memory state does not outlive the handle")
+
+    clock = FakeClock()
+    store = stores.open(clock=clock)
+    await store.commit(STREAM, "c1", ["a1"], MAPPING)
+    clock.advance(30)
+    await store.mark_caught_up(STREAM)
+    clock.advance(70)
+
+    assert await stores.reopen().caught_up_age(STREAM) == 70
+
+
+async def test_a_database_from_before_caught_up_opens_and_migrates(
+    stores: StoreHarness,
+) -> None:
+    """A running deployment's store predates the column, and CREATE TABLE IF NOT
+    EXISTS leaves an existing table exactly as it was. It must open, keep its
+    cursor, and start stamping -- not fail at its first commit."""
+    if not stores.durable:
+        pytest.skip("only a file has a schema from before")
+
+    old = sqlite3.connect(stores.path)
+    old.executescript(
+        """
+        CREATE TABLE streams (
+            stream TEXT PRIMARY KEY, cursor TEXT,
+            committed INTEGER NOT NULL DEFAULT 0,
+            mapping_version TEXT, last_published_ms INTEGER
+        );
+        CREATE TABLE seen (uid TEXT PRIMARY KEY, expires_at REAL NOT NULL);
+        INSERT INTO streams VALUES ('okta-system-log', 'c7', 1, 'okta-2026.09.01', 5);
+        """
+    )
+    old.close()
+
+    clock = FakeClock()
+    store = stores.open(clock=clock)
+
+    assert await store.get_cursor(STREAM) == "c7"
+    assert await store.caught_up_age(STREAM) is None, "unknown, not invented"
+    await store.mark_caught_up(STREAM)
+    clock.advance(9)
+    assert await store.caught_up_age(STREAM) == 9
